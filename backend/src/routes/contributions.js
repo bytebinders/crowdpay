@@ -7,6 +7,7 @@ const {
   submitPreparedTransaction,
   getPathPaymentQuote,
   getSupportedAssetCodes,
+  ensureCustodialAccountFundedAndTrusted,
 } = require('../services/stellarService');
 const { insertContributionSubmitted } = require('../services/stellarTransactionService');
 
@@ -149,6 +150,18 @@ router.post('/', requireAuth, async (req, res) => {
   );
   const senderSecret = users[0].wallet_secret_encrypted; // decrypt in production
   const contributorPublicKey = users[0].wallet_public_key;
+
+  try {
+    await ensureCustodialAccountFundedAndTrusted({
+      publicKey: contributorPublicKey,
+      secret: senderSecret,
+    });
+  } catch (err) {
+    console.error('[contributions] Custodial account setup failed:', err.message);
+    return res.status(503).json({
+      error: 'Wallet setup is still completing; please retry in a few seconds.',
+    });
+  }
 
   let txHash;
   let conversionQuote = null;

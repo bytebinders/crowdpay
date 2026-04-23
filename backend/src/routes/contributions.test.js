@@ -17,6 +17,7 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl }) {
     submitPreparedTransaction: async () => 'tx-from-submit',
     getPathPaymentQuote: async () => [],
     getSupportedAssetCodes: () => ['XLM', 'USDC'],
+    ensureCustodialAccountFundedAndTrusted: async () => null,
     ...stellarImpl,
   };
 
@@ -273,6 +274,37 @@ test('POST /api/contributions supports reverse conversion USDC -> XLM', async ()
   assert.equal(pathPayload.sendAsset, 'USDC');
   assert.equal(pathPayload.destAmount, '10.0000000');
   assert.equal(pathPayload.destAssetCode, 'XLM');
+});
+
+test('POST /api/contributions returns 503 when custodial trustline setup fails', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{ id: 'c-1', status: 'active', asset_type: 'XLM', wallet_public_key: 'GDEST' }],
+        };
+      }
+      if (text.includes('FROM users')) {
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
+      }
+      return { rows: [] };
+    },
+    stellarImpl: {
+      ensureCustodialAccountFundedAndTrusted: async () => {
+        throw new Error('horizon_down');
+      },
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: 'c-1', amount: '5.0000000', send_asset: 'XLM' });
+
+  assert.equal(response.status, 503);
+  assert.match(response.body.error, /retry/i);
 });
 
 test('POST /api/contributions returns 502 when Stellar submit fails and skips audit insert', async () => {

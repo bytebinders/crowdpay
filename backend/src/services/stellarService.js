@@ -40,6 +40,105 @@ function getSupportedAssetCodes() {
   return Object.keys(configuredAssets);
 }
 
+/** Issued assets CrowdPay may move on-chain (requires trustlines on custodial accounts). */
+function listCreditAssetCodes() {
+  return getSupportedAssetCodes().filter((code) => code !== 'XLM');
+}
+
+function accountHasCreditTrustline(account, assetCode) {
+  if (assetCode === 'XLM') return true;
+  const asset = toStellarAsset(assetCode);
+  return account.balances.some(
+    (b) =>
+      b.asset_type !== 'native' &&
+      b.asset_code === asset.code &&
+      b.asset_issuer === asset.issuer
+  );
+}
+
+/** Minimum starting XLM for a new account that will hold `trustlineCount` trust lines (approximate). */
+function suggestedFundingXlmForCustodialAccount(trustlineCount) {
+  const base = 2.5;
+  const perTrustline = 0.51;
+  return (base + Math.max(0, trustlineCount) * perTrustline).toFixed(7);
+}
+
+async function accountExistsOnLedger(publicKey) {
+  try {
+    await server.loadAccount(publicKey);
+    return true;
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 404) return false;
+    if (err?.response?.data?.status === 404) return false;
+    throw err;
+  }
+}
+
+/**
+ * Create and fund a custodial account on the ledger (platform pays createAccount fee + reserve).
+ * No-op if the account already exists.
+ */
+async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
+  if (await accountExistsOnLedger(publicKey)) return false;
+  const trustlineCount = listCreditAssetCodes().length;
+  const startingBalance = suggestedFundingXlmForCustodialAccount(trustlineCount);
+  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const tx = new TransactionBuilder(platformAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.createAccount({
+        destination: publicKey,
+        startingBalance,
+      })
+    )
+    .setTimeout(30)
+    .build();
+
+  tx.sign(PLATFORM_KEYPAIR);
+  await server.submitTransaction(tx);
+  return true;
+}
+
+/**
+ * Add missing trustlines for all configured credit assets; signed by the custodial account master.
+ * Returns the last transaction hash if a transaction was submitted, otherwise null.
+ */
+async function submitMissingTrustlinesForCustodialAccount(signerSecret) {
+  const keypair = Keypair.fromSecret(signerSecret);
+  const account = await server.loadAccount(keypair.publicKey());
+  const builder = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  });
+
+  let missing = 0;
+  for (const code of listCreditAssetCodes()) {
+    if (!accountHasCreditTrustline(account, code)) {
+      builder.addOperation(Operation.changeTrust({ asset: toStellarAsset(code) }));
+      missing += 1;
+    }
+  }
+
+  if (!missing) return null;
+
+  const tx = builder.setTimeout(30).build();
+  tx.sign(keypair);
+  const result = await server.submitTransaction(tx);
+  return result.hash;
+}
+
+/**
+ * Ensure a custodial user (or any funded keypair we hold) can hold and send all supported issued assets.
+ * Creates the ledger account via platform if missing, then establishes any missing trustlines.
+ */
+async function ensureCustodialAccountFundedAndTrusted({ publicKey, secret }) {
+  await fundCustodialAccountFromPlatformIfNeeded(publicKey);
+  return submitMissingTrustlinesForCustodialAccount(secret);
+}
+
 function normalizeAsset(record) {
   if (!record) return null;
   if (record.asset_type === 'native') return 'XLM';
@@ -56,15 +155,17 @@ async function createCampaignWallet(creatorPublicKey) {
   const campaignKeypair = Keypair.random();
   const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
 
+  const creditCodes = listCreditAssetCodes();
+  const campaignStartingBalance = suggestedFundingXlmForCustodialAccount(creditCodes.length + 1);
+
   const tx = new TransactionBuilder(platformAccount, {
     fee: BASE_FEE,
     networkPassphrase,
   })
-    // Fund the new campaign account with minimum reserve
     .addOperation(
       Operation.createAccount({
         destination: campaignKeypair.publicKey(),
-        startingBalance: '2', // covers base reserve + trustline reserve
+        startingBalance: campaignStartingBalance,
       })
     )
     .setTimeout(30)
@@ -76,15 +177,14 @@ async function createCampaignWallet(creatorPublicKey) {
   // Now configure the campaign account: trustline + multisig
   const campaignAccount = await server.loadAccount(campaignKeypair.publicKey());
 
-  const setupTx = new TransactionBuilder(campaignAccount, {
+  const setupBuilder = new TransactionBuilder(campaignAccount, {
     fee: BASE_FEE,
     networkPassphrase,
-  })
-    // Trustline for USDC
-    .addOperation(
-      Operation.changeTrust({ asset: USDC })
-    )
-    // Add creator as signer (weight 1)
+  });
+  for (const code of creditCodes) {
+    setupBuilder.addOperation(Operation.changeTrust({ asset: toStellarAsset(code) }));
+  }
+  const setupTx = setupBuilder
     .addOperation(
       Operation.setOptions({
         signer: { ed25519PublicKey: creatorPublicKey, weight: 1 },
@@ -331,6 +431,10 @@ module.exports = {
   createCampaignWallet,
   toStellarAsset,
   getSupportedAssetCodes,
+  listCreditAssetCodes,
+  ensureCustodialAccountFundedAndTrusted,
+  fundCustodialAccountFromPlatformIfNeeded,
+  submitMissingTrustlinesForCustodialAccount,
   prepareSignedContributionPayment,
   prepareSignedContributionPathPayment,
   submitPayment,
