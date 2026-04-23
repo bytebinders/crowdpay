@@ -9,6 +9,11 @@ const {
   submitSignedWithdrawal,
   PLATFORM_PUBLIC_KEY,
 } = require('../services/stellarService');
+const {
+  insertWithdrawalPendingSignatures,
+  finalizeWithdrawalSubmitted,
+  markWithdrawalFailed,
+} = require('../services/stellarTransactionService');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
 
@@ -130,6 +135,17 @@ router.post('/request', requireAuth, async (req, res) => {
       action: 'requested',
       note: null,
       metadata: { amount, destination_key, asset_type: campaign.asset_type },
+    });
+    await insertWithdrawalPendingSignatures(client, {
+      campaignId: campaign_id,
+      withdrawalRequestId: rows[0].id,
+      userId: req.user.userId,
+      unsignedXdr: xdr,
+      metadata: {
+        amount,
+        destination_key,
+        asset_type: campaign.asset_type,
+      },
     });
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
@@ -269,6 +285,10 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
         note: err.message || 'Stellar submit failed',
         metadata: { detail: String(err) },
       });
+      await markWithdrawalFailed(client, {
+        withdrawalRequestId: req.params.id,
+        reason: err.message || 'Stellar submit failed',
+      });
       await client.query('COMMIT');
     } catch (logErr) {
       await client.query('ROLLBACK');
@@ -301,6 +321,11 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
       action: 'platform_signed',
       note: null,
       metadata: { tx_hash: txHash },
+    });
+    await finalizeWithdrawalSubmitted(client, {
+      withdrawalRequestId: req.params.id,
+      txHash,
+      signedXdr,
     });
     await client.query('COMMIT');
     res.json(updated[0]);

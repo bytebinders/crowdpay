@@ -40,6 +40,105 @@ function getSupportedAssetCodes() {
   return Object.keys(configuredAssets);
 }
 
+/** Issued assets CrowdPay may move on-chain (requires trustlines on custodial accounts). */
+function listCreditAssetCodes() {
+  return getSupportedAssetCodes().filter((code) => code !== 'XLM');
+}
+
+function accountHasCreditTrustline(account, assetCode) {
+  if (assetCode === 'XLM') return true;
+  const asset = toStellarAsset(assetCode);
+  return account.balances.some(
+    (b) =>
+      b.asset_type !== 'native' &&
+      b.asset_code === asset.code &&
+      b.asset_issuer === asset.issuer
+  );
+}
+
+/** Minimum starting XLM for a new account that will hold `trustlineCount` trust lines (approximate). */
+function suggestedFundingXlmForCustodialAccount(trustlineCount) {
+  const base = 2.5;
+  const perTrustline = 0.51;
+  return (base + Math.max(0, trustlineCount) * perTrustline).toFixed(7);
+}
+
+async function accountExistsOnLedger(publicKey) {
+  try {
+    await server.loadAccount(publicKey);
+    return true;
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 404) return false;
+    if (err?.response?.data?.status === 404) return false;
+    throw err;
+  }
+}
+
+/**
+ * Create and fund a custodial account on the ledger (platform pays createAccount fee + reserve).
+ * No-op if the account already exists.
+ */
+async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
+  if (await accountExistsOnLedger(publicKey)) return false;
+  const trustlineCount = listCreditAssetCodes().length;
+  const startingBalance = suggestedFundingXlmForCustodialAccount(trustlineCount);
+  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const tx = new TransactionBuilder(platformAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.createAccount({
+        destination: publicKey,
+        startingBalance,
+      })
+    )
+    .setTimeout(30)
+    .build();
+
+  tx.sign(PLATFORM_KEYPAIR);
+  await server.submitTransaction(tx);
+  return true;
+}
+
+/**
+ * Add missing trustlines for all configured credit assets; signed by the custodial account master.
+ * Returns the last transaction hash if a transaction was submitted, otherwise null.
+ */
+async function submitMissingTrustlinesForCustodialAccount(signerSecret) {
+  const keypair = Keypair.fromSecret(signerSecret);
+  const account = await server.loadAccount(keypair.publicKey());
+  const builder = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  });
+
+  let missing = 0;
+  for (const code of listCreditAssetCodes()) {
+    if (!accountHasCreditTrustline(account, code)) {
+      builder.addOperation(Operation.changeTrust({ asset: toStellarAsset(code) }));
+      missing += 1;
+    }
+  }
+
+  if (!missing) return null;
+
+  const tx = builder.setTimeout(30).build();
+  tx.sign(keypair);
+  const result = await server.submitTransaction(tx);
+  return result.hash;
+}
+
+/**
+ * Ensure a custodial user (or any funded keypair we hold) can hold and send all supported issued assets.
+ * Creates the ledger account via platform if missing, then establishes any missing trustlines.
+ */
+async function ensureCustodialAccountFundedAndTrusted({ publicKey, secret }) {
+  await fundCustodialAccountFromPlatformIfNeeded(publicKey);
+  return submitMissingTrustlinesForCustodialAccount(secret);
+}
+
 function normalizeAsset(record) {
   if (!record) return null;
   if (record.asset_type === 'native') return 'XLM';
@@ -56,15 +155,17 @@ async function createCampaignWallet(creatorPublicKey) {
   const campaignKeypair = Keypair.random();
   const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
 
+  const creditCodes = listCreditAssetCodes();
+  const campaignStartingBalance = suggestedFundingXlmForCustodialAccount(creditCodes.length + 1);
+
   const tx = new TransactionBuilder(platformAccount, {
     fee: BASE_FEE,
     networkPassphrase,
   })
-    // Fund the new campaign account with minimum reserve
     .addOperation(
       Operation.createAccount({
         destination: campaignKeypair.publicKey(),
-        startingBalance: '2', // covers base reserve + trustline reserve
+        startingBalance: campaignStartingBalance,
       })
     )
     .setTimeout(30)
@@ -76,15 +177,14 @@ async function createCampaignWallet(creatorPublicKey) {
   // Now configure the campaign account: trustline + multisig
   const campaignAccount = await server.loadAccount(campaignKeypair.publicKey());
 
-  const setupTx = new TransactionBuilder(campaignAccount, {
+  const setupBuilder = new TransactionBuilder(campaignAccount, {
     fee: BASE_FEE,
     networkPassphrase,
-  })
-    // Trustline for USDC
-    .addOperation(
-      Operation.changeTrust({ asset: USDC })
-    )
-    // Add creator as signer (weight 1)
+  });
+  for (const code of creditCodes) {
+    setupBuilder.addOperation(Operation.changeTrust({ asset: toStellarAsset(code) }));
+  }
+  const setupTx = setupBuilder
     .addOperation(
       Operation.setOptions({
         signer: { ed25519PublicKey: creatorPublicKey, weight: 1 },
@@ -119,13 +219,17 @@ async function createCampaignWallet(creatorPublicKey) {
 }
 
 /**
- * Submit a simple payment contribution (XLM or USDC direct).
- * For custodial users the backend signs on their behalf.
+ * Build and sign a custodial payment contribution; returns XDR for audit + submission.
  */
-async function submitPayment({ senderSecret, destinationPublicKey, asset, amount, memo }) {
+async function prepareSignedContributionPayment({
+  senderSecret,
+  destinationPublicKey,
+  asset,
+  amount,
+  memo,
+}) {
   const senderKeypair = Keypair.fromSecret(senderSecret);
   const senderAccount = await server.loadAccount(senderKeypair.publicKey());
-
   const stellarAsset = toStellarAsset(asset);
 
   const tx = new TransactionBuilder(senderAccount, {
@@ -143,28 +247,37 @@ async function submitPayment({ senderSecret, destinationPublicKey, asset, amount
     .setTimeout(30)
     .build();
 
+  const unsignedXdr = tx.toXDR();
   tx.sign(senderKeypair);
-  const result = await server.submitTransaction(tx);
-  return result.hash;
+  const signedXdr = tx.toXDR();
+  return { unsignedXdr, signedXdr };
 }
 
 /**
- * Submit a path payment contribution.
- * The contributor sends any asset; the campaign receives exactly `destAmount` USDC.
- * Stellar's DEX finds the conversion path automatically.
+ * Submit a simple payment contribution (XLM or USDC direct).
+ * For custodial users the backend signs on their behalf.
  */
-async function submitPathPayment({
+async function submitPayment(params) {
+  const { signedXdr } = await prepareSignedContributionPayment(params);
+  return submitPreparedTransaction(signedXdr);
+}
+
+/**
+ * Build and sign a path payment contribution; `destAssetCode` is the asset the campaign receives.
+ */
+async function prepareSignedContributionPathPayment({
   senderSecret,
   destinationPublicKey,
   sendAsset,
   sendMax,
   destAmount,
+  destAssetCode,
   memo,
 }) {
   const senderKeypair = Keypair.fromSecret(senderSecret);
   const senderAccount = await server.loadAccount(senderKeypair.publicKey());
-
   const sourceStellarAsset = toStellarAsset(sendAsset);
+  const destStellarAsset = toStellarAsset(destAssetCode);
 
   const tx = new TransactionBuilder(senderAccount, {
     fee: BASE_FEE,
@@ -175,7 +288,7 @@ async function submitPathPayment({
         sendAsset: sourceStellarAsset,
         sendMax: String(sendMax),
         destination: destinationPublicKey,
-        destAsset: USDC,
+        destAsset: destStellarAsset,
         destAmount: String(destAmount),
         path: [], // empty path lets Stellar use direct market routing
       })
@@ -184,9 +297,23 @@ async function submitPathPayment({
     .setTimeout(30)
     .build();
 
+  const unsignedXdr = tx.toXDR();
   tx.sign(senderKeypair);
-  const result = await server.submitTransaction(tx);
-  return result.hash;
+  const signedXdr = tx.toXDR();
+  return { unsignedXdr, signedXdr };
+}
+
+/**
+ * Submit a path payment contribution.
+ * The contributor sends `sendAsset`; the campaign receives exactly `destAmount` of `destAssetCode`.
+ */
+async function submitPathPayment(params) {
+  const destAssetCode = params.destAssetCode || 'USDC';
+  const { signedXdr } = await prepareSignedContributionPathPayment({
+    ...params,
+    destAssetCode,
+  });
+  return submitPreparedTransaction(signedXdr);
 }
 
 /**
@@ -266,10 +393,14 @@ function signatureCountFromXdr(xdr) {
   return tx.signatures.length;
 }
 
-async function submitSignedWithdrawal({ xdr }) {
+async function submitPreparedTransaction(xdr) {
   const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
   const result = await server.submitTransaction(tx);
   return result.hash;
+}
+
+async function submitSignedWithdrawal({ xdr }) {
+  return submitPreparedTransaction(xdr);
 }
 
 /**
@@ -300,8 +431,15 @@ module.exports = {
   createCampaignWallet,
   toStellarAsset,
   getSupportedAssetCodes,
+  listCreditAssetCodes,
+  ensureCustodialAccountFundedAndTrusted,
+  fundCustodialAccountFromPlatformIfNeeded,
+  submitMissingTrustlinesForCustodialAccount,
+  prepareSignedContributionPayment,
+  prepareSignedContributionPathPayment,
   submitPayment,
   submitPathPayment,
+  submitPreparedTransaction,
   getPathPaymentQuote,
   buildWithdrawalTransaction,
   getAccountMultisigConfig,

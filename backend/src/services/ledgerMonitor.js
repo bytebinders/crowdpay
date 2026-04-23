@@ -8,6 +8,7 @@
 
 const { server } = require('../config/stellar');
 const db = require('../config/database');
+const { markContributionIndexed } = require('./stellarTransactionService');
 
 // Map of publicKey -> EventSource (so we can close them if needed)
 const activeStreams = new Map();
@@ -50,21 +51,22 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     sourceAmount && destinationAmount ? destinationAmount / sourceAmount : null;
   const txHash = payment.transaction_hash;
 
+  const client = await db.connect();
   try {
-    // Deduplicate by tx hash
-    const existing = await db.query(
+    const existing = await client.query(
       'SELECT id FROM contributions WHERE tx_hash = $1',
       [txHash]
     );
     if (existing.rows.length > 0) return;
 
-    await db.query('BEGIN');
+    await client.query('BEGIN');
 
-    await db.query(
+    const { rows: inserted } = await client.query(
       `INSERT INTO contributions
          (campaign_id, sender_public_key, amount, asset, payment_type, source_amount,
           source_asset, conversion_rate, path, tx_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+       RETURNING id`,
       [
         campaignId,
         payment.from,
@@ -79,19 +81,26 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
       ]
     );
 
-    // Update campaign raised amount (normalise to campaign asset later for multi-asset)
-    await db.query(
+    await client.query(
       `UPDATE campaigns SET raised_amount = raised_amount + $1 WHERE id = $2`,
       [destinationAmount, campaignId]
     );
 
-    await db.query('COMMIT');
+    await markContributionIndexed(client, txHash, inserted[0].id);
+
+    await client.query('COMMIT');
     console.log(
       `[monitor] Contribution indexed: ${destinationAmount} ${destinationAsset} -> campaign ${campaignId}`
     );
   } catch (err) {
-    await db.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore rollback errors after failed work
+    }
     console.error('[monitor] Failed to index contribution:', err.message);
+  } finally {
+    client.release();
   }
 }
 
@@ -107,4 +116,4 @@ async function startLedgerMonitor() {
   console.log(`[monitor] Watching ${rows.length} active campaign(s)`);
 }
 
-module.exports = { startLedgerMonitor, watchCampaignWallet };
+module.exports = { startLedgerMonitor, watchCampaignWallet, handlePayment };

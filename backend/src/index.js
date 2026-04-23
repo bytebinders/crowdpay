@@ -12,6 +12,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/campaigns', require('./routes/campaigns'));
 app.use('/api/contributions', require('./routes/contributions'));
 app.use('/api/withdrawals', require('./routes/withdrawals'));
+app.use('/api/stellar/transactions', require('./routes/stellarTransactions'));
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 

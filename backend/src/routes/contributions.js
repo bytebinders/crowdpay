@@ -2,11 +2,14 @@ const router = require('express').Router();
 const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
 const {
-  submitPayment,
-  submitPathPayment,
+  prepareSignedContributionPayment,
+  prepareSignedContributionPathPayment,
+  submitPreparedTransaction,
   getPathPaymentQuote,
   getSupportedAssetCodes,
+  ensureCustodialAccountFundedAndTrusted,
 } = require('../services/stellarService');
+const { insertContributionSubmitted } = require('../services/stellarTransactionService');
 
 const SLIPPAGE_BPS = 500; // 5.00%
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
@@ -20,6 +23,63 @@ router.get('/campaign/:campaignId', async (req, res) => {
     [req.params.campaignId]
   );
   res.json(rows);
+});
+
+// Trace contribution settlement by Stellar tx hash (submitted vs indexed on ledger)
+router.get('/finalization/:txHash', requireAuth, async (req, res) => {
+  const txHash = req.params.txHash;
+  const { rows } = await db.query(
+    `SELECT st.id, st.status, st.tx_hash, st.campaign_id, st.contribution_id,
+            st.initiated_by_user_id, st.metadata, st.created_at, st.updated_at,
+            c.creator_id,
+            ct.id AS contribution_row_id, ct.sender_public_key, ct.amount,
+            ct.asset, ct.created_at AS contribution_created_at
+     FROM stellar_transactions st
+     JOIN campaigns c ON c.id = st.campaign_id
+     LEFT JOIN contributions ct ON ct.id = st.contribution_id
+     WHERE st.tx_hash = $1 AND st.kind = 'contribution'`,
+    [txHash]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'No contribution transaction found' });
+  const row = rows[0];
+
+  const { rows: userRows } = await db.query(
+    'SELECT wallet_public_key FROM users WHERE id = $1',
+    [req.user.userId]
+  );
+  const userPk = userRows[0]?.wallet_public_key;
+  const isInitiator = row.initiated_by_user_id === req.user.userId;
+  const isCreator = row.creator_id === req.user.userId;
+  const isContributor = userPk && row.sender_public_key && row.sender_public_key === userPk;
+  const isPlatform =
+    process.env.PLATFORM_APPROVER_USER_ID &&
+    req.user.userId === process.env.PLATFORM_APPROVER_USER_ID;
+
+  if (!isInitiator && !isCreator && !isContributor && !isPlatform) {
+    return res.status(403).json({ error: 'Not authorized to view this transaction' });
+  }
+
+  let finalizationStatus = 'awaiting_ledger';
+  if (row.status === 'indexed') finalizationStatus = 'finalized';
+  if (row.status === 'failed') finalizationStatus = 'failed';
+
+  res.json({
+    tx_hash: row.tx_hash,
+    finalization_status: finalizationStatus,
+    stellar_transaction_id: row.id,
+    campaign_id: row.campaign_id,
+    contribution: row.contribution_row_id
+      ? {
+          id: row.contribution_row_id,
+          sender_public_key: row.sender_public_key,
+          amount: row.amount,
+          asset: row.asset,
+          created_at: row.contribution_created_at,
+        }
+      : null,
+    metadata: row.metadata,
+    updated_at: row.updated_at,
+  });
 });
 
 // Quote conversion before a path payment contribution
@@ -85,25 +145,47 @@ router.post('/', requireAuth, async (req, res) => {
 
   // Load contributor's custodial secret
   const { rows: users } = await db.query(
-    'SELECT wallet_secret_encrypted FROM users WHERE id = $1',
+    'SELECT wallet_secret_encrypted, wallet_public_key FROM users WHERE id = $1',
     [req.user.userId]
   );
   const senderSecret = users[0].wallet_secret_encrypted; // decrypt in production
+  const contributorPublicKey = users[0].wallet_public_key;
+
+  try {
+    await ensureCustodialAccountFundedAndTrusted({
+      publicKey: contributorPublicKey,
+      secret: senderSecret,
+    });
+  } catch (err) {
+    console.error('[contributions] Custodial account setup failed:', err.message);
+    return res.status(503).json({
+      error: 'Wallet setup is still completing; please retry in a few seconds.',
+    });
+  }
 
   let txHash;
   let conversionQuote = null;
+  let unsignedXdr;
+  let signedXdr;
+  let flowMetadata;
 
   if (send_asset === campaign.asset_type) {
-    // Direct payment — same asset, no conversion needed
-    txHash = await submitPayment({
+    const prepared = await prepareSignedContributionPayment({
       senderSecret,
       destinationPublicKey: campaign.wallet_public_key,
       asset: send_asset,
       amount,
       memo: `cp-${campaign_id}`,
     });
+    unsignedXdr = prepared.unsignedXdr;
+    signedXdr = prepared.signedXdr;
+    flowMetadata = {
+      flow: 'payment',
+      send_asset,
+      amount: String(amount),
+      contributor_public_key: contributorPublicKey,
+    };
   } else {
-    // Path payment — contributor sends one supported asset, campaign receives its default asset
     const paths = await getPathPaymentQuote({
       sendAsset: send_asset,
       destAsset: campaign.asset_type,
@@ -121,14 +203,17 @@ router.post('/', requireAuth, async (req, res) => {
       (1 + SLIPPAGE_BPS / 10000)
     ).toFixed(7);
 
-    txHash = await submitPathPayment({
+    const prepared = await prepareSignedContributionPathPayment({
       senderSecret,
       destinationPublicKey: campaign.wallet_public_key,
       sendAsset: send_asset,
       sendMax,
       destAmount: amount,
+      destAssetCode: campaign.asset_type,
       memo: `cp-${campaign_id}`,
     });
+    unsignedXdr = prepared.unsignedXdr;
+    signedXdr = prepared.signedXdr;
 
     conversionQuote = {
       send_asset,
@@ -138,11 +223,38 @@ router.post('/', requireAuth, async (req, res) => {
       max_send_amount: sendMax,
       path: bestPath.path,
     };
+    flowMetadata = {
+      flow: 'path_payment_strict_receive',
+      send_asset,
+      dest_asset: campaign.asset_type,
+      dest_amount: String(amount),
+      max_send_amount: sendMax,
+      contributor_public_key: contributorPublicKey,
+    };
   }
 
-  // The ledger monitor will index this automatically, but return tx hash immediately
+  try {
+    txHash = await submitPreparedTransaction(signedXdr);
+  } catch (err) {
+    console.error('[contributions] Stellar submit failed:', err.message);
+    return res.status(502).json({
+      error: 'Stellar network rejected the transaction',
+      detail: err.message || String(err),
+    });
+  }
+
+  const stellarTransactionId = await insertContributionSubmitted(null, {
+    txHash,
+    campaignId: campaign_id,
+    userId: req.user.userId,
+    unsignedXdr,
+    signedXdr,
+    metadata: flowMetadata,
+  });
+
   res.status(202).json({
     tx_hash: txHash,
+    stellar_transaction_id: stellarTransactionId,
     message: 'Transaction submitted',
     conversion_quote: conversionQuote,
   });

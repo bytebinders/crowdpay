@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Keypair } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
+const { ensureCustodialAccountFundedAndTrusted } = require('../services/stellarService');
 
 // Register — creates user + custodial Stellar keypair
 router.post('/register', async (req, res) => {
@@ -28,6 +29,14 @@ router.post('/register', async (req, res) => {
 
   const token = jwt.sign({ userId: rows[0].id }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES_IN,
+  });
+
+  const publicKey = keypair.publicKey();
+  const secret = keypair.secret();
+  setImmediate(() => {
+    ensureCustodialAccountFundedAndTrusted({ publicKey, secret }).catch((err) => {
+      console.error('[users] Background Stellar funding/trustlines failed:', err.message);
+    });
   });
 
   res.status(201).json({ token, user: rows[0] });

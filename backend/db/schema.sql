@@ -84,3 +84,40 @@ CREATE INDEX ON campaigns (status);
 CREATE INDEX ON campaigns (creator_id);
 CREATE INDEX ON withdrawal_approval_events (withdrawal_request_id);
 CREATE INDEX ON withdrawal_approval_events (created_at DESC);
+
+-- Unified on-chain audit + reporting index for Stellar flows (contributions, withdrawals)
+CREATE TABLE stellar_transactions (
+  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind                    TEXT NOT NULL CHECK (kind IN ('contribution', 'withdrawal')),
+  status                  TEXT NOT NULL CHECK (status IN (
+                            'pending_signatures',
+                            'submitted',
+                            'indexed',
+                            'failed'
+                          )),
+  tx_hash                 TEXT UNIQUE,
+  campaign_id             UUID NOT NULL REFERENCES campaigns(id),
+  withdrawal_request_id   UUID REFERENCES withdrawal_requests(id),
+  initiated_by_user_id    UUID REFERENCES users(id),
+  unsigned_xdr            TEXT,
+  signed_xdr              TEXT,
+  metadata                JSONB NOT NULL DEFAULT '{}',
+  contribution_id         UUID REFERENCES contributions(id),
+  failure_reason          TEXT,
+  created_at              TIMESTAMPTZ DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT stellar_transactions_kind_withdrawal_chk CHECK (
+    (kind = 'withdrawal' AND withdrawal_request_id IS NOT NULL)
+    OR (kind = 'contribution' AND withdrawal_request_id IS NULL)
+  ),
+  CONSTRAINT stellar_transactions_withdrawal_no_contribution_chk CHECK (
+    (kind = 'withdrawal' AND contribution_id IS NULL)
+    OR kind = 'contribution'
+  )
+);
+
+CREATE INDEX stellar_transactions_campaign_created_idx
+  ON stellar_transactions (campaign_id, created_at DESC);
+CREATE INDEX stellar_transactions_status_idx ON stellar_transactions (status);
+CREATE INDEX stellar_transactions_tx_hash_idx ON stellar_transactions (tx_hash);
+CREATE INDEX stellar_transactions_withdrawal_idx ON stellar_transactions (withdrawal_request_id);

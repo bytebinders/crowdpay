@@ -4,18 +4,32 @@ const express = require('express');
 const request = require('supertest');
 const proxyquire = require('proxyquire').noCallThru();
 
-function buildApp({ queryImpl, stellarImpl }) {
+function buildApp({ queryImpl, stellarImpl, stellarTxImpl }) {
   const stellarStub = {
-    submitPayment: async () => 'unused',
-    submitPathPayment: async () => 'unused',
+    prepareSignedContributionPayment: async () => ({
+      unsignedXdr: 'unsigned-xdr',
+      signedXdr: 'signed-xdr',
+    }),
+    prepareSignedContributionPathPayment: async () => ({
+      unsignedXdr: 'unsigned-xdr',
+      signedXdr: 'signed-xdr',
+    }),
+    submitPreparedTransaction: async () => 'tx-from-submit',
     getPathPaymentQuote: async () => [],
     getSupportedAssetCodes: () => ['XLM', 'USDC'],
+    ensureCustodialAccountFundedAndTrusted: async () => null,
     ...stellarImpl,
+  };
+
+  const stellarTxStub = {
+    insertContributionSubmitted: async () => 'stellar-row-id',
+    ...stellarTxImpl,
   };
 
   const router = proxyquire('./contributions', {
     '../config/database': { query: queryImpl },
     '../services/stellarService': stellarStub,
+    '../services/stellarTransactionService': stellarTxStub,
     '../middleware/auth': {
       requireAuth: (req, _res, next) => {
         req.user = { userId: 'user-1' };
@@ -76,6 +90,7 @@ test('GET /api/contributions/quote returns 404 when no path exists', async () =>
 });
 
 test('POST /api/contributions uses direct payment for same asset', async () => {
+  const prepared = [];
   const submitted = [];
   const app = buildApp({
     queryImpl: async (text) => {
@@ -85,17 +100,23 @@ test('POST /api/contributions uses direct payment for same asset', async () => {
         };
       }
       if (text.includes('FROM users')) {
-        return { rows: [{ wallet_secret_encrypted: 'SSECRET' }] };
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
       }
       return { rows: [] };
     },
     stellarImpl: {
-      submitPayment: async (payload) => {
-        submitted.push(payload);
-        return 'tx-direct';
+      prepareSignedContributionPayment: async (payload) => {
+        prepared.push(payload);
+        return { unsignedXdr: 'u', signedXdr: 's' };
       },
-      submitPathPayment: async () => {
+      prepareSignedContributionPathPayment: async () => {
         throw new Error('should not be called');
+      },
+      submitPreparedTransaction: async (xdr) => {
+        submitted.push(xdr);
+        return 'tx-direct';
       },
       getPathPaymentQuote: async () => [],
     },
@@ -108,7 +129,10 @@ test('POST /api/contributions uses direct payment for same asset', async () => {
 
   assert.equal(response.status, 202);
   assert.equal(response.body.tx_hash, 'tx-direct');
+  assert.equal(response.body.stellar_transaction_id, 'stellar-row-id');
+  assert.equal(prepared.length, 1);
   assert.equal(submitted.length, 1);
+  assert.equal(submitted[0], 's');
 });
 
 test('POST /api/contributions uses direct payment for same USDC asset', async () => {
@@ -121,18 +145,21 @@ test('POST /api/contributions uses direct payment for same USDC asset', async ()
         };
       }
       if (text.includes('FROM users')) {
-        return { rows: [{ wallet_secret_encrypted: 'SSECRET' }] };
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
       }
       return { rows: [] };
     },
     stellarImpl: {
-      submitPayment: async (payload) => {
+      prepareSignedContributionPayment: async (payload) => {
         submitted.push(payload);
-        return 'tx-direct-usdc';
+        return { unsignedXdr: 'u', signedXdr: 's' };
       },
-      submitPathPayment: async () => {
+      prepareSignedContributionPathPayment: async () => {
         throw new Error('should not be called');
       },
+      submitPreparedTransaction: async () => 'tx-direct-usdc',
       getPathPaymentQuote: async () => [],
       getSupportedAssetCodes: () => ['XLM', 'USDC'],
     },
@@ -158,18 +185,21 @@ test('POST /api/contributions uses path payment for conversion', async () => {
         };
       }
       if (text.includes('FROM users')) {
-        return { rows: [{ wallet_secret_encrypted: 'SSECRET' }] };
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
       }
       return { rows: [] };
     },
     stellarImpl: {
-      submitPayment: async () => {
+      prepareSignedContributionPayment: async () => {
         throw new Error('should not be called');
       },
-      submitPathPayment: async (payload) => {
+      prepareSignedContributionPathPayment: async (payload) => {
         pathPayload = payload;
-        return 'tx-path';
+        return { unsignedXdr: 'u', signedXdr: 's' };
       },
+      submitPreparedTransaction: async () => 'tx-path',
       getPathPaymentQuote: async () => [
         {
           source_asset: 'XLM',
@@ -192,6 +222,7 @@ test('POST /api/contributions uses path payment for conversion', async () => {
   assert.equal(response.body.conversion_quote.max_send_amount, '5.2500000');
   assert.equal(pathPayload.sendMax, '5.2500000');
   assert.equal(pathPayload.destAmount, '4.5000000');
+  assert.equal(pathPayload.destAssetCode, 'USDC');
 });
 
 test('POST /api/contributions supports reverse conversion USDC -> XLM', async () => {
@@ -204,18 +235,21 @@ test('POST /api/contributions supports reverse conversion USDC -> XLM', async ()
         };
       }
       if (text.includes('FROM users')) {
-        return { rows: [{ wallet_secret_encrypted: 'SSECRET' }] };
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
       }
       return { rows: [] };
     },
     stellarImpl: {
-      submitPayment: async () => {
+      prepareSignedContributionPayment: async () => {
         throw new Error('should not be called');
       },
-      submitPathPayment: async (payload) => {
+      prepareSignedContributionPathPayment: async (payload) => {
         pathPayload = payload;
-        return 'tx-path-reverse';
+        return { unsignedXdr: 'u', signedXdr: 's' };
       },
+      submitPreparedTransaction: async () => 'tx-path-reverse',
       getPathPaymentQuote: async () => [
         {
           source_asset: 'USDC',
@@ -239,4 +273,116 @@ test('POST /api/contributions supports reverse conversion USDC -> XLM', async ()
   assert.equal(response.body.conversion_quote.max_send_amount, '12.6000000');
   assert.equal(pathPayload.sendAsset, 'USDC');
   assert.equal(pathPayload.destAmount, '10.0000000');
+  assert.equal(pathPayload.destAssetCode, 'XLM');
+});
+
+test('POST /api/contributions returns 503 when custodial trustline setup fails', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{ id: 'c-1', status: 'active', asset_type: 'XLM', wallet_public_key: 'GDEST' }],
+        };
+      }
+      if (text.includes('FROM users')) {
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
+      }
+      return { rows: [] };
+    },
+    stellarImpl: {
+      ensureCustodialAccountFundedAndTrusted: async () => {
+        throw new Error('horizon_down');
+      },
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: 'c-1', amount: '5.0000000', send_asset: 'XLM' });
+
+  assert.equal(response.status, 503);
+  assert.match(response.body.error, /retry/i);
+});
+
+test('POST /api/contributions returns 502 when Stellar submit fails and skips audit insert', async () => {
+  let inserted = false;
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{ id: 'c-1', status: 'active', asset_type: 'XLM', wallet_public_key: 'GDEST' }],
+        };
+      }
+      if (text.includes('FROM users')) {
+        return {
+          rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }],
+        };
+      }
+      return { rows: [] };
+    },
+    stellarImpl: {
+      submitPreparedTransaction: async () => {
+        throw new Error('tx_failed');
+      },
+    },
+    stellarTxImpl: {
+      insertContributionSubmitted: async () => {
+        inserted = true;
+        return 'should-not-run';
+      },
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: 'c-1', amount: '5.0000000', send_asset: 'XLM' });
+
+  assert.equal(response.status, 502);
+  assert.equal(inserted, false);
+});
+
+test('GET /api/contributions/finalization/:txHash returns finalized when indexed', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM stellar_transactions st')) {
+        return {
+          rows: [
+            {
+              id: 'st-1',
+              status: 'indexed',
+              tx_hash: 'txh',
+              campaign_id: 'c-1',
+              contribution_id: 'contrib-1',
+              initiated_by_user_id: 'user-1',
+              metadata: {},
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              creator_id: 'user-1',
+              contribution_row_id: 'contrib-1',
+              sender_public_key: 'GSENDER',
+              amount: '5',
+              asset: 'XLM',
+              contribution_created_at: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      if (text.includes('wallet_public_key FROM users')) {
+        return { rows: [{ wallet_public_key: 'GSENDER' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .get('/api/contributions/finalization/txh')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.finalization_status, 'finalized');
+  assert.equal(response.body.contribution.id, 'contrib-1');
 });

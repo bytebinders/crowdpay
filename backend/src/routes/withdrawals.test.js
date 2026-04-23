@@ -92,6 +92,9 @@ test('POST /api/withdrawals/request creates pending request and logs event', asy
       if (text.includes('INSERT INTO withdrawal_approval_events')) {
         return { rows: [] };
       }
+      if (text.includes('INSERT INTO stellar_transactions')) {
+        return { rows: [{ id: 'stellar-1' }] };
+      }
       return { rows: [] };
     },
   });
@@ -105,6 +108,7 @@ test('POST /api/withdrawals/request creates pending request and logs event', asy
   assert.equal(response.status, 201);
   assert.equal(response.body.status, 'pending');
   assert.ok(calls.some((c) => c.includes('INSERT INTO withdrawal_approval_events')));
+  assert.ok(calls.some((c) => c.includes('INSERT INTO stellar_transactions')));
 });
 
 test('POST /api/withdrawals/request blocks when campaign not active or funded', async () => {
@@ -290,6 +294,9 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
         return { rows: [{ id: 'w-1', status: 'submitted', tx_hash: 'tx-hash' }] };
       }
       if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };
+      if (text.includes('UPDATE stellar_transactions') && text.includes("kind = 'withdrawal'")) {
+        return { rows: [] };
+      }
       return { rows: [] };
     },
   });
@@ -303,6 +310,7 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
   assert.equal(response.status, 200);
   assert.equal(response.body.status, 'submitted');
   assert.ok(calls.some((c) => c.includes("status = 'submitted'")));
+  assert.ok(calls.some((c) => c.includes('UPDATE stellar_transactions')));
 });
 
 test('POST /api/withdrawals/:id/cancel denies after creator signed', async () => {
@@ -417,6 +425,9 @@ test('POST /api/withdrawals/:id/approve/platform logs failure when Stellar rejec
       }
       if (text.includes("SET status = 'failed'")) return { rows: [] };
       if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };
+      if (text.includes('UPDATE stellar_transactions') && text.includes("status = 'failed'")) {
+        return { rows: [] };
+      }
       return { rows: [] };
     },
     stellarImpl: {
