@@ -99,9 +99,13 @@ Success response (`200`):
 ]
 ```
 
+### `GET /api/withdrawals/capabilities`
+
+Returns whether the authenticated user may perform **platform** signing/rejection (`can_approve_platform`). If `PLATFORM_APPROVER_USER_ID` is set in the backend environment, only that user’s JWT subject matches; otherwise (dev only) any authenticated user may act as platform for API calls.
+
 ### `POST /api/withdrawals/request`
 
-Create a pending withdrawal request (creator only). The backend verifies campaign wallet multisig thresholds/signers before storing the XDR.
+Create a pending withdrawal request (creator only). Verifies multisig on the campaign wallet, ensures the campaign is `active` or `funded`, and rejects if another `pending` withdrawal already exists for the same campaign.
 
 Body:
 
@@ -111,6 +115,14 @@ Body:
 
 Returns `201` with withdrawal request (`creator_signed=false`, `platform_signed=false`, `status=pending`).
 
+Appends an audit row to `withdrawal_approval_events` with action `requested`.
+
+Errors:
+
+- `403` not the campaign creator
+- `409` campaign status not eligible, or duplicate pending withdrawal
+- `422` multisig configuration invalid
+
 ### `POST /api/withdrawals/:id/approve/creator`
 
 Creator approval step. Signs withdrawal XDR using creator custodial key and marks `creator_signed=true`.
@@ -118,7 +130,9 @@ Creator approval step. Signs withdrawal XDR using creator custodial key and mark
 Errors:
 
 - `403` caller is not campaign creator
-- `409` request no longer pending or already creator-approved
+- `409` request no longer pending, campaign status not `active`/`funded`, or already creator-approved
+
+Logs `creator_signed` in `withdrawal_approval_events`.
 
 ### `POST /api/withdrawals/:id/approve/platform`
 
@@ -126,17 +140,32 @@ Platform approval/finalization step. Signs with platform key, validates dual-sig
 
 Errors:
 
-- `409` creator approval missing
+- `403` caller cannot perform platform signature (see `PLATFORM_APPROVER_USER_ID`)
+- `409` creator approval missing, campaign status not eligible, or request not pending
 - `422` insufficient signatures in XDR
+- `502` Stellar rejected the transaction — request is marked `failed` and `submit_failed` is logged
 
 Success:
 
 - marks request as `status=submitted`
 - stores Stellar `tx_hash`
+- logs `platform_signed` in `withdrawal_approval_events`
+
+### `POST /api/withdrawals/:id/cancel`
+
+Creator-only. Cancels a **pending** request **before** creator signature (`creator_signed=false`). Sets `status=denied` and stores optional `reason` in `denial_reason`. Logs `creator_cancelled`.
+
+### `POST /api/withdrawals/:id/reject`
+
+Platform-only (same rules as platform approve). Rejects a **pending** request **after** creator has signed and **before** platform signature. Sets `status=denied`. Body optional: `{ "reason": "..." }`. Logs `platform_rejected`.
 
 ### `GET /api/withdrawals/campaign/:campaignId`
 
-List withdrawal requests and signature statuses for a campaign.
+List withdrawal requests for a campaign (`denial_reason` included when denied). **Authorized for campaign creator or configured platform approver only** (others receive `403`).
+
+### `GET /api/withdrawals/:id/events`
+
+Immutable audit timeline for one withdrawal: `action`, `actor_user_id`, `note`, `metadata`, `created_at`. Same authorization as the campaign list endpoint.
 
 ## Auditability and traceability
 
@@ -148,6 +177,8 @@ List withdrawal requests and signature statuses for a campaign.
   - conversion `path` as JSON
   - immutable Stellar `tx_hash`
 - This enables independent reconciliation against Horizon payment records by `tx_hash`.
+
+- Manual fund releases append rows to `withdrawal_approval_events` (`requested`, `creator_signed`, `platform_signed`, `creator_cancelled`, `platform_rejected`, `submit_failed`) with optional `note` and `metadata` JSON for audit and manual review.
 
 ## Test coverage
 
@@ -162,3 +193,5 @@ List withdrawal requests and signature statuses for a campaign.
 - withdrawal request creation with multisig validation
 - withdrawal creator/platform approval flow
 - withdrawal denial paths (missing creator approval, insufficient signatures)
+- withdrawal campaign status and duplicate-pending guards
+- withdrawal cancel/reject and Stellar submit failure logging

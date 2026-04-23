@@ -5,8 +5,8 @@ export default function CampaignCard({ campaign }) {
   const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
 
   return (
-    <Link to={`/campaigns/${campaign.id}`} style={{ display: 'block' }}>
-      <div style={styles.card}>
+    <Link to={`/campaigns/${campaign.id}`} style={{ display: 'block' }} className="campaign-card-link">
+      <div className="campaign-card" style={styles.card}>
         <div style={styles.header}>
           <span style={styles.asset}>{campaign.asset_type}</span>
         </div>
