@@ -99,6 +99,45 @@ Success response (`200`):
 ]
 ```
 
+### `POST /api/withdrawals/request`
+
+Create a pending withdrawal request (creator only). The backend verifies campaign wallet multisig thresholds/signers before storing the XDR.
+
+Body:
+
+- `campaign_id` (required)
+- `destination_key` (required)
+- `amount` (required)
+
+Returns `201` with withdrawal request (`creator_signed=false`, `platform_signed=false`, `status=pending`).
+
+### `POST /api/withdrawals/:id/approve/creator`
+
+Creator approval step. Signs withdrawal XDR using creator custodial key and marks `creator_signed=true`.
+
+Errors:
+
+- `403` caller is not campaign creator
+- `409` request no longer pending or already creator-approved
+
+### `POST /api/withdrawals/:id/approve/platform`
+
+Platform approval/finalization step. Signs with platform key, validates dual-signature presence, and submits to Stellar.
+
+Errors:
+
+- `409` creator approval missing
+- `422` insufficient signatures in XDR
+
+Success:
+
+- marks request as `status=submitted`
+- stores Stellar `tx_hash`
+
+### `GET /api/withdrawals/campaign/:campaignId`
+
+List withdrawal requests and signature statuses for a campaign.
+
 ## Auditability and traceability
 
 - Every indexed contribution stores:
@@ -120,3 +159,6 @@ Success response (`200`):
 - direct payment path for `USDC -> USDC`
 - conversion path payment for `XLM -> USDC`
 - conversion path payment for `USDC -> XLM`
+- withdrawal request creation with multisig validation
+- withdrawal creator/platform approval flow
+- withdrawal denial paths (missing creator approval, insufficient signatures)

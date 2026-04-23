@@ -11,6 +11,7 @@
 const {
   Keypair,
   TransactionBuilder,
+  Transaction,
   Operation,
   Asset,
   BASE_FEE,
@@ -245,6 +246,32 @@ async function buildWithdrawalTransaction({
   return tx.toXDR();
 }
 
+async function getAccountMultisigConfig(publicKey) {
+  const account = await server.loadAccount(publicKey);
+  return {
+    thresholds: account.thresholds,
+    signers: account.signers || [],
+  };
+}
+
+function signTransactionXdr({ xdr, signerSecret }) {
+  const signer = Keypair.fromSecret(signerSecret);
+  const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
+  tx.sign(signer);
+  return tx.toXDR();
+}
+
+function signatureCountFromXdr(xdr) {
+  const tx = new Transaction(xdr, networkPassphrase);
+  return tx.signatures.length;
+}
+
+async function submitSignedWithdrawal({ xdr }) {
+  const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
+  const result = await server.submitTransaction(tx);
+  return result.hash;
+}
+
 /**
  * Get the current balance of a campaign wallet.
  */
@@ -277,6 +304,10 @@ module.exports = {
   submitPathPayment,
   getPathPaymentQuote,
   buildWithdrawalTransaction,
+  getAccountMultisigConfig,
+  signTransactionXdr,
+  signatureCountFromXdr,
+  submitSignedWithdrawal,
   getCampaignBalance,
   friendbotFund,
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),
