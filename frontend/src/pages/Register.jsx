@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { markJustRegistered } from '../lib/onboarding';
 
 export default function Register() {
   const { login } = useAuth();
@@ -19,9 +20,11 @@ export default function Register() {
     try {
       const { token, user } = await api.register(form);
       login(user, token);
+      markJustRegistered();
       navigate('/');
     } catch (err) {
       setError(err.message);
+    } finally {
       setLoading(false);
     }
   }

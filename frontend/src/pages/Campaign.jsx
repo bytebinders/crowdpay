@@ -1,28 +1,81 @@
 import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams, useLocation } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import ContributeModal from '../components/ContributeModal';
 
 export default function Campaign() {
   const { id } = useParams();
-  const { user, token } = useAuth();
+  const location = useLocation();
+  const { user } = useAuth();
   const [campaign, setCampaign] = useState(null);
+  const [loadError, setLoadError] = useState('');
   const [contributions, setContributions] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [contributed, setContributed] = useState(false);
+  const [showCreatedBanner, setShowCreatedBanner] = useState(!!location.state?.created);
 
   useEffect(() => {
-    api.getCampaign(id).then(setCampaign).catch(console.error);
-    api.getContributions(id).then(setContributions).catch(console.error);
+    setLoadError('');
+    api
+      .getCampaign(id)
+      .then(setCampaign)
+      .catch((err) => setLoadError(err.message || 'Could not load campaign.'));
+    api.getContributions(id).then(setContributions).catch(() => setContributions([]));
   }, [id, contributed]);
 
-  if (!campaign) return <p style={{ padding: '3rem', color: '#999' }}>Loading…</p>;
+  useEffect(() => {
+    if (location.state?.created) {
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state]);
+
+  if (loadError && !campaign) {
+    return (
+      <main className="container page-narrow" style={{ paddingTop: '2.5rem' }}>
+        <p className="alert alert--error" role="alert">
+          {loadError}
+        </p>
+        <Link to="/" style={{ color: '#7c3aed', fontWeight: 600 }}>
+          ← Back home
+        </Link>
+      </main>
+    );
+  }
+
+  if (!campaign) {
+    return (
+      <main className="container" style={{ paddingTop: '3rem' }}>
+        <p style={{ color: '#666' }}>Loading campaign…</p>
+      </main>
+    );
+  }
 
   const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
 
   return (
     <main className="container" style={{ paddingTop: '2.5rem', paddingBottom: '4rem', maxWidth: '760px' }}>
+      {showCreatedBanner && (
+        <div className="alert alert--success" style={{ marginBottom: '1.25rem' }} role="status">
+          <strong>Campaign is live.</strong> Share the link — contributors can fund in XLM or USDC when conversion paths
+          are available.
+          <button
+            type="button"
+            onClick={() => setShowCreatedBanner(false)}
+            style={{
+              marginLeft: '0.5rem',
+              background: 'transparent',
+              color: '#065f46',
+              textDecoration: 'underline',
+              fontWeight: 600,
+              padding: 0,
+              minHeight: 'auto',
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div style={styles.header}>
         <span style={styles.asset}>{campaign.asset_type}</span>
         <h1 style={styles.title}>{campaign.title}</h1>
@@ -43,11 +96,20 @@ export default function Campaign() {
         <div style={styles.bar}><div style={{ ...styles.fill, width: `${pct}%` }} /></div>
 
         {user ? (
-          <button className="btn-primary" style={styles.cta} onClick={() => setShowModal(true)}>
+          <button type="button" className="btn-primary" style={styles.cta} onClick={() => setShowModal(true)}>
             Contribute
           </button>
         ) : (
-          <p style={{ color: '#777', fontSize: '0.9rem' }}>Log in to contribute.</p>
+          <p style={{ color: '#555', fontSize: '0.9rem', lineHeight: 1.5 }}>
+            <Link to="/login" state={{ from: `/campaigns/${id}` }} style={{ color: '#7c3aed', fontWeight: 600 }}>
+              Log in
+            </Link>{' '}
+            or{' '}
+            <Link to="/register" style={{ color: '#7c3aed', fontWeight: 600 }}>
+              create an account
+            </Link>{' '}
+            to contribute. You will get a custodial Stellar wallet automatically.
+          </p>
         )}
       </div>
 
@@ -63,8 +125,19 @@ export default function Campaign() {
         <div style={styles.list}>
           {contributions.map((c) => (
             <div key={c.id} style={styles.row}>
-              <span style={styles.sender}>{c.sender_public_key.slice(0, 8)}…{c.sender_public_key.slice(-4)}</span>
-              <span style={styles.amount}>{Number(c.amount).toLocaleString()} {c.asset}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={styles.sender}>
+                  {c.sender_public_key.slice(0, 8)}…{c.sender_public_key.slice(-4)}
+                </div>
+                {c.payment_type === 'path_payment_strict_receive' && c.source_asset && c.source_amount != null && (
+                  <div style={styles.convHint}>
+                    via {Number(c.source_amount).toLocaleString()} {c.source_asset}
+                  </div>
+                )}
+              </div>
+              <span style={styles.amount}>
+                +{Number(c.amount).toLocaleString()} {c.asset}
+              </span>
             </div>
           ))}
         </div>
@@ -74,7 +147,7 @@ export default function Campaign() {
         <ContributeModal
           campaign={campaign}
           onClose={() => setShowModal(false)}
-          onSuccess={() => { setShowModal(false); setContributed((v) => !v); }}
+          onSuccess={() => setContributed((v) => !v)}
         />
       )}
     </main>
@@ -100,5 +173,6 @@ const styles = {
   list: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
   row: { display: 'flex', justifyContent: 'space-between', background: '#fff', border: '1px solid #eee', borderRadius: '6px', padding: '0.6rem 0.85rem' },
   sender: { fontSize: '0.85rem', color: '#555', fontFamily: 'monospace' },
-  amount: { fontSize: '0.85rem', fontWeight: 600 },
+  amount: { fontSize: '0.85rem', fontWeight: 600, flexShrink: 0 },
+  convHint: { fontSize: '0.72rem', color: '#888', marginTop: '0.15rem' },
 };
