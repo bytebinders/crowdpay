@@ -59,6 +59,8 @@ export const api = {
     request('GET', '/contributions/quote', null, token, {
       query: { send_asset, dest_asset, dest_amount },
     }),
+  failExpiredCampaigns: (token) => request('POST', '/campaigns/cron/fail-expired', null, token),
+  triggerCampaignRefunds: (campaignId, token) => request('POST', `/campaigns/${campaignId}/trigger-refunds`, null, token),
 
   getWithdrawalCapabilities: (token) => request('GET', '/withdrawals/capabilities', null, token),
   listWithdrawals: (campaignId, token) =>

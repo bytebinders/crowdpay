@@ -1,6 +1,8 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
+const logger = require('../config/logger');
+const { sendAlert } = require('../services/alerting');
 const {
   buildWithdrawalTransaction,
   getAccountMultisigConfig,
@@ -152,7 +154,7 @@ router.post('/request', requireAuth, async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[withdrawals] request failed:', err.message);
+    logger.error('Withdrawal request creation failed', { error: err.message, campaign_id });
     res.status(500).json({ error: 'Could not create withdrawal request' });
   } finally {
     client.release();
@@ -173,7 +175,7 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
   if (requestRow.creator_id !== req.user.userId) {
     return res.status(403).json({ error: 'Only campaign creator can approve creator signature' });
   }
-  if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
+  if (!requestRow.is_refund && !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
     return res.status(409).json({
       error: `Campaign status is "${requestRow.campaign_status}". Creator approval is not allowed.`,
     });
@@ -221,7 +223,7 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[withdrawals] creator approve failed:', err.message);
+    logger.error('Creator approval recording failed', { withdrawal_id: req.params.id, error: err.message });
     res.status(500).json({ error: 'Could not record creator approval' });
   } finally {
     client.release();
@@ -243,7 +245,7 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
   if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
   const requestRow = requests[0];
 
-  if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
+  if (!requestRow.is_refund && !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
     return res.status(409).json({
       error: `Campaign status is "${requestRow.campaign_status}". Platform release is blocked.`,
     });
@@ -272,6 +274,14 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
   try {
     txHash = await submitSignedWithdrawal({ xdr: signedXdr });
   } catch (err) {
+    logger.error('Withdrawal Stellar submission failed', {
+      withdrawal_id: req.params.id,
+      error: err.message,
+    });
+    sendAlert('Withdrawal submission failed', {
+      withdrawal_id: req.params.id,
+      error: err.message,
+    });
     const client = await db.connect();
     try {
       await client.query('BEGIN');
@@ -293,7 +303,7 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
       await client.query('COMMIT');
     } catch (logErr) {
       await client.query('ROLLBACK');
-      console.error('[withdrawals] failed to log submit error:', logErr.message);
+      logger.error('Failed to persist withdrawal submit error', { withdrawal_id: req.params.id, error: logErr.message });
     } finally {
       client.release();
     }
@@ -343,7 +353,11 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[withdrawals] platform approve persist failed:', err.message);
+    logger.error('Platform approval persistence failed after Stellar submit', {
+      withdrawal_id: req.params.id,
+      tx_hash: txHash,
+      error: err.message,
+    });
     res.status(500).json({ error: 'Transaction submitted but failed to update records; check Stellar and audit trail.' });
   } finally {
     client.release();
@@ -400,7 +414,7 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[withdrawals] cancel failed:', err.message);
+    logger.error('Withdrawal cancellation failed', { withdrawal_id: req.params.id, error: err.message });
     res.status(500).json({ error: 'Could not cancel withdrawal request' });
   } finally {
     client.release();
@@ -455,7 +469,7 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[withdrawals] reject failed:', err.message);
+    logger.error('Withdrawal rejection failed', { withdrawal_id: req.params.id, error: err.message });
     res.status(500).json({ error: 'Could not reject withdrawal request' });
   } finally {
     client.release();

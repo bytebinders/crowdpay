@@ -77,6 +77,11 @@ export default function Campaign() {
           </button>
         </div>
       )}
+      {campaign.status === 'failed' && (
+        <div className="alert alert--error" style={{ marginBottom: '1.25rem' }} role="status">
+          <strong>This campaign did not reach its goal.</strong> Contributions are closed and refunds can be requested.
+        </div>
+      )}
       <div style={styles.header}>
         <span style={styles.asset}>{campaign.asset_type}</span>
         <h1 style={styles.title}>{campaign.title}</h1>
@@ -96,20 +101,26 @@ export default function Campaign() {
         </div>
         <div style={styles.bar}><div style={{ ...styles.fill, width: `${pct}%` }} /></div>
 
-        {user ? (
-          <button type="button" className="btn-primary" style={styles.cta} onClick={() => setShowModal(true)}>
-            Contribute
-          </button>
+        {campaign.status === 'active' ? (
+          user ? (
+            <button type="button" className="btn-primary" style={styles.cta} onClick={() => setShowModal(true)}>
+              Contribute
+            </button>
+          ) : (
+            <p style={{ color: '#555', fontSize: '0.9rem', lineHeight: 1.5 }}>
+              <Link to="/login" state={{ from: `/campaigns/${id}` }} style={{ color: '#7c3aed', fontWeight: 600 }}>
+                Log in
+              </Link>{' '}
+              or{' '}
+              <Link to="/register" style={{ color: '#7c3aed', fontWeight: 600 }}>
+                create an account
+              </Link>{' '}
+              to contribute. You will get a custodial Stellar wallet automatically.
+            </p>
+          )
         ) : (
           <p style={{ color: '#555', fontSize: '0.9rem', lineHeight: 1.5 }}>
-            <Link to="/login" state={{ from: `/campaigns/${id}` }} style={{ color: '#7c3aed', fontWeight: 600 }}>
-              Log in
-            </Link>{' '}
-            or{' '}
-            <Link to="/register" style={{ color: '#7c3aed', fontWeight: 600 }}>
-              create an account
-            </Link>{' '}
-            to contribute. You will get a custodial Stellar wallet automatically.
+            Contributions are closed while this campaign is <strong>{campaign.status}</strong>.
           </p>
         )}
       </div>
@@ -144,6 +155,15 @@ export default function Campaign() {
                 {c.payment_type === 'path_payment_strict_receive' && c.source_asset && c.source_amount != null && (
                   <div style={styles.convHint}>
                     via {Number(c.source_amount).toLocaleString()} {c.source_asset}
+                  </div>
+                )}
+                {c.refund_status && (
+                  <div style={styles.refundTag}>
+                    {c.refund_status === 'pending' && 'Refund pending'}
+                    {c.refund_status === 'submitted' && 'Refunded'}
+                    {c.refund_status === 'indexed' && 'Refunded'}
+                    {c.refund_status === 'failed' && 'Refund failed'}
+                    {c.refund_status === 'denied' && 'Refund denied'}
                   </div>
                 )}
               </div>
@@ -187,4 +207,5 @@ const styles = {
   sender: { fontSize: '0.85rem', color: '#555', fontFamily: 'monospace' },
   amount: { fontSize: '0.85rem', fontWeight: 600, flexShrink: 0 },
   convHint: { fontSize: '0.72rem', color: '#888', marginTop: '0.15rem' },
+  refundTag: { marginTop: '0.45rem', fontSize: '0.75rem', color: '#7c3aed', fontWeight: 700 },
 };

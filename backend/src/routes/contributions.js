@@ -1,6 +1,8 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
+const logger = require('../config/logger');
+const { sendAlert } = require('../services/alerting');
 const {
   prepareSignedContributionPayment,
   prepareSignedContributionPathPayment,
@@ -17,9 +19,20 @@ const SUPPORTED_ASSETS = getSupportedAssetCodes();
 // Get contributions for a campaign
 router.get('/campaign/:campaignId', async (req, res) => {
   const { rows } = await db.query(
-    `SELECT id, sender_public_key, amount, asset, payment_type, source_amount,
-            source_asset, conversion_rate, path, tx_hash, created_at
-     FROM contributions WHERE campaign_id = $1 ORDER BY created_at DESC`,
+    `SELECT c.id, c.sender_public_key, c.amount, c.asset, c.payment_type,
+            c.source_amount, c.source_asset, c.conversion_rate, c.path,
+            c.tx_hash, c.created_at,
+            wr.status AS refund_status, wr.tx_hash AS refund_tx_hash
+     FROM contributions c
+     LEFT JOIN LATERAL (
+       SELECT status, tx_hash
+       FROM withdrawal_requests
+       WHERE contribution_id = c.id
+       ORDER BY created_at DESC
+       LIMIT 1
+     ) wr ON TRUE
+     WHERE c.campaign_id = $1
+     ORDER BY c.created_at DESC`,
     [req.params.campaignId]
   );
   res.json(rows);
@@ -157,7 +170,7 @@ router.post('/', requireAuth, async (req, res) => {
       secret: senderSecret,
     });
   } catch (err) {
-    console.error('[contributions] Custodial account setup failed:', err.message);
+    logger.error('Custodial account setup failed', { campaign_id, error: err.message });
     return res.status(503).json({
       error: 'Wallet setup is still completing; please retry in a few seconds.',
     });
@@ -236,7 +249,8 @@ router.post('/', requireAuth, async (req, res) => {
   try {
     txHash = await submitPreparedTransaction(signedXdr);
   } catch (err) {
-    console.error('[contributions] Stellar submit failed:', err.message);
+    logger.error('Stellar transaction submission failed', { campaign_id, error: err.message });
+    sendAlert('Stellar transaction submission failed', { campaign_id, error: err.message });
     return res.status(502).json({
       error: 'Stellar network rejected the transaction',
       detail: err.message || String(err),

@@ -17,7 +17,7 @@ const activeStreams = new Map();
 async function watchCampaignWallet(campaignId, walletPublicKey) {
   if (activeStreams.has(walletPublicKey)) return;
 
-  console.log(`[monitor] Watching campaign ${campaignId} wallet ${walletPublicKey}`);
+  logger.info('Watching campaign wallet', { campaign_id: campaignId, wallet: walletPublicKey });
 
   const closeStream = server
     .payments()
@@ -26,7 +26,16 @@ async function watchCampaignWallet(campaignId, walletPublicKey) {
     .stream({
       onmessage: (payment) => handlePayment(campaignId, walletPublicKey, payment),
       onerror: (err) => {
-        console.error(`[monitor] Stream error for ${walletPublicKey}:`, err.message);
+        logger.error('Ledger stream error', {
+          campaign_id: campaignId,
+          wallet: walletPublicKey,
+          error: err.message || String(err),
+        });
+        sendAlert('Ledger monitor stream error', {
+          campaign_id: campaignId,
+          wallet: walletPublicKey,
+          error: err.message || String(err),
+        });
       },
     });
 
@@ -37,6 +46,12 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
   // Only process incoming payments
   if (payment.to !== walletPublicKey) return;
   if (payment.type !== 'payment' && payment.type !== 'path_payment_strict_receive') return;
+
+  const { rows: campaignRows } = await db.query(
+    'SELECT status FROM campaigns WHERE id = $1',
+    [campaignId]
+  );
+  if (!campaignRows.length || campaignRows[0].status !== 'active') return;
 
   const destinationAsset = payment.asset_type === 'native' ? 'XLM' : payment.asset_code;
   const destinationAmount = parseFloat(payment.amount);
@@ -128,7 +143,11 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     } catch {
       // ignore rollback errors after failed work
     }
-    console.error('[monitor] Failed to index contribution:', err.message);
+    logger.error('Failed to index contribution', {
+      campaign_id: campaignId,
+      tx_hash: txHash,
+      error: err.message,
+    });
   } finally {
     client.release();
   }
@@ -160,7 +179,7 @@ async function startLedgerMonitor() {
     watchCampaignWallet(campaign.id, campaign.wallet_public_key);
   }
 
-  console.log(`[monitor] Watching ${rows.length} active campaign(s)`);
+  logger.info('Ledger monitor started', { active_campaigns: rows.length });
 }
 
 module.exports = { startLedgerMonitor, watchCampaignWallet, handlePayment };
