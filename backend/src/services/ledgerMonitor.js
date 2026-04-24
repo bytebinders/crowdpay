@@ -37,6 +37,12 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
   if (payment.to !== walletPublicKey) return;
   if (payment.type !== 'payment' && payment.type !== 'path_payment_strict_receive') return;
 
+  const { rows: campaignRows } = await db.query(
+    'SELECT status FROM campaigns WHERE id = $1',
+    [campaignId]
+  );
+  if (!campaignRows.length || campaignRows[0].status !== 'active') return;
+
   const destinationAsset = payment.asset_type === 'native' ? 'XLM' : payment.asset_code;
   const destinationAmount = parseFloat(payment.amount);
   const sourceAsset = payment.source_asset_type

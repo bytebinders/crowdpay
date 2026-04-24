@@ -172,7 +172,7 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
   if (requestRow.creator_id !== req.user.userId) {
     return res.status(403).json({ error: 'Only campaign creator can approve creator signature' });
   }
-  if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
+  if (!requestRow.is_refund && !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
     return res.status(409).json({
       error: `Campaign status is "${requestRow.campaign_status}". Creator approval is not allowed.`,
     });
@@ -242,7 +242,7 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
   if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
   const requestRow = requests[0];
 
-  if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
+  if (!requestRow.is_refund && !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
     return res.status(409).json({
       error: `Campaign status is "${requestRow.campaign_status}". Platform release is blocked.`,
     });
