@@ -71,4 +71,14 @@ export const api = {
   cancelWithdrawal: (id, body, token) => request('POST', `/withdrawals/${id}/cancel`, body || {}, token),
   rejectWithdrawal: (id, body, token) => request('POST', `/withdrawals/${id}/reject`, body || {}, token),
   getWithdrawalEvents: (id, token) => request('GET', `/withdrawals/${id}/events`, null, token),
+
+  listApiKeys: (token) => request('GET', '/api-keys', null, token),
+  createApiKey: (body, token) => request('POST', '/api-keys', body, token),
+  deleteApiKey: (id, token) => request('DELETE', `/api-keys/${id}`, null, token),
+
+  listWebhooks: (token) => request('GET', '/webhooks', null, token),
+  createWebhook: (body, token) => request('POST', '/webhooks', body, token),
+  deleteWebhook: (id, token) => request('DELETE', `/webhooks/${id}`, null, token),
+  listWebhookDeliveries: (token, options = {}) =>
+    request('GET', '/webhooks/deliveries', null, token, { query: options }),
 };

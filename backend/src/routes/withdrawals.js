@@ -14,6 +14,7 @@ const {
   finalizeWithdrawalSubmitted,
   markWithdrawalFailed,
 } = require('../services/stellarTransactionService');
+const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
 
@@ -328,6 +329,17 @@ router.post('/:id/approve/platform', requireAuth, async (req, res) => {
       signedXdr,
     });
     await client.query('COMMIT');
+    const withdrawalRow = updated[0];
+    setImmediate(() => {
+      db.query('SELECT creator_id FROM campaigns WHERE id = $1', [withdrawalRow.campaign_id])
+        .then(({ rows: cr }) => {
+          if (!cr.length) return;
+          return emitWebhookEventForUser(cr[0].creator_id, WEBHOOK_EVENTS.WITHDRAWAL_COMPLETED, {
+            withdrawal: { ...withdrawalRow, tx_hash: txHash },
+          });
+        })
+        .catch((e) => console.error('[withdrawals] webhook:', e.message));
+    });
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');

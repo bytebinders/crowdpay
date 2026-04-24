@@ -6,6 +6,9 @@ test('handlePayment updates stellar_transactions when a contribution row is crea
   const updates = [];
   const mockQuery = async (text, params) => {
     if (text.includes('SELECT id FROM contributions')) return { rows: [] };
+    if (text.includes('SELECT creator_id FROM campaigns')) {
+      return { rows: [{ creator_id: 'user-creator' }] };
+    }
     if (text === 'BEGIN') return { rows: [] };
     if (text.includes('INSERT INTO contributions')) return { rows: [{ id: 'contrib-id' }] };
     if (text.includes('UPDATE campaigns')) return { rows: [] };
@@ -28,6 +31,10 @@ test('handlePayment updates stellar_transactions when a contribution row is crea
   const ledgerMonitor = proxyquire('./ledgerMonitor', {
     '../config/database': mockDb,
     '../config/stellar': { server: {} },
+    './webhookDispatcher': {
+      emitWebhookEventForUser: async () => {},
+      WEBHOOK_EVENTS: {},
+    },
   });
 
   const payment = {
