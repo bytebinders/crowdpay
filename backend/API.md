@@ -180,6 +180,14 @@ Immutable audit timeline for one withdrawal: `action`, `actor_user_id`, `note`, 
 
 - Manual fund releases append rows to `withdrawal_approval_events` (`requested`, `creator_signed`, `platform_signed`, `creator_cancelled`, `platform_rejected`, `submit_failed`) with optional `note` and `metadata` JSON for audit and manual review.
 
+## Ledger monitor health
+
+### `GET /health/ledger`
+
+Public JSON snapshot for operations: Horizon **cursor** row per active campaign wallet (from `ledger_stream_cursors`), in-process **SSE stream state** (`connected`, `reconnecting`, `error`, `not_connected`), last message time, reconnect attempt count, and `stale_stream_no_messages_15m` when a supposedly connected stream has had no SSE traffic for 15 minutes.
+
+The backend also logs a **warning** every 5 minutes if any wallet is in that stale state.
+
 ## Test coverage
 
 `node --test src/**/*.test.js` includes route coverage for:
