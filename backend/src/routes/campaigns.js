@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const db = require('../config/database');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireRole } = require('../middleware/auth');
 const {
   createCampaignWallet,
   getCampaignBalance,
@@ -11,11 +11,6 @@ const { watchCampaignWallet } = require('../services/ledgerMonitor');
 const { insertWithdrawalPendingSignatures } = require('../services/stellarTransactionService');
 const { sendEmail } = require('../services/emailService');
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
-
-function canPerformPlatformAction(userId) {
-  if (!process.env.PLATFORM_APPROVER_USER_ID) return true;
-  return userId === process.env.PLATFORM_APPROVER_USER_ID;
-}
 
 async function logWithdrawalEvent(client, { withdrawalRequestId, actorUserId, action, note, metadata }) {
   const runner = client || db;
@@ -31,7 +26,8 @@ async function logWithdrawalEvent(client, { withdrawalRequestId, actorUserId, ac
 router.get('/', async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, title, description, target_amount, raised_amount, asset_type,
-            wallet_public_key, status, creator_id, created_at
+            wallet_public_key, status, creator_id, created_at,
+            (SELECT COUNT(*)::int FROM campaign_updates cu WHERE cu.campaign_id = campaigns.id) AS updates_count
      FROM campaigns WHERE status = 'active' ORDER BY created_at DESC`
   );
   res.json(rows);
@@ -56,11 +52,7 @@ router.get('/:id/balance', async (req, res) => {
 });
 
 // Scheduled endpoint to fail expired campaigns and prevent further contributions
-router.post('/cron/fail-expired', requireAuth, async (req, res) => {
-  if (!canPerformPlatformAction(req.user.userId)) {
-    return res.status(403).json({ error: 'Only platform approver can run campaign expiry checks' });
-  }
-
+router.post('/cron/fail-expired', requireAuth, requireRole('admin'), async (req, res) => {
   const { rows } = await db.query(
     `UPDATE campaigns SET status = 'failed'
        WHERE status = 'active'
@@ -74,11 +66,7 @@ router.post('/cron/fail-expired', requireAuth, async (req, res) => {
 });
 
 // Scheduled endpoint to send 48h deadline reminders
-router.post('/cron/reminders', requireAuth, async (req, res) => {
-  if (!canPerformPlatformAction(req.user.userId)) {
-    return res.status(403).json({ error: 'Only platform approver can run reminders' });
-  }
-
+router.post('/cron/reminders', requireAuth, requireRole('admin'), async (req, res) => {
   // Find campaigns ending in exactly 2 days that are still active
   const { rows } = await db.query(
     `SELECT c.id, c.title, c.deadline, u.email as creator_email
@@ -101,11 +89,7 @@ If your target is reached, you can request a withdrawal. Otherwise, contribution
 });
 
 // Trigger refund withdrawal requests for a failed campaign
-router.post('/:id/trigger-refunds', requireAuth, async (req, res) => {
-  if (!canPerformPlatformAction(req.user.userId)) {
-    return res.status(403).json({ error: 'Only platform approver can trigger campaign refunds' });
-  }
-
+router.post('/:id/trigger-refunds', requireAuth, requireRole('admin'), async (req, res) => {
   const campaignId = req.params.id;
   const { rows: campaigns } = await db.query(
     `SELECT id, wallet_public_key, status FROM campaigns WHERE id = $1`,
@@ -185,7 +169,7 @@ router.post('/:id/trigger-refunds', requireAuth, async (req, res) => {
 });
 
 // Create campaign (authenticated)
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireRole('creator', 'admin'), async (req, res) => {
   const { title, description, target_amount, asset_type, deadline } = req.body;
   if (!title || !target_amount || !asset_type) {
     return res.status(400).json({ error: 'title, target_amount and asset_type are required' });
@@ -217,6 +201,42 @@ router.post('/', requireAuth, async (req, res) => {
   // Start monitoring the new wallet immediately
   watchCampaignWallet(rows[0].id, wallet.publicKey);
 
+  res.status(201).json(rows[0]);
+});
+
+router.get('/:id/updates', async (req, res) => {
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const { rows } = await db.query(
+    `SELECT cu.id, cu.campaign_id, cu.author_id, cu.title, cu.body, cu.created_at, u.name AS author_name
+     FROM campaign_updates cu
+     JOIN users u ON u.id = cu.author_id
+     WHERE cu.campaign_id = $1
+     ORDER BY cu.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [req.params.id, limit, offset]
+  );
+  res.json(rows);
+});
+
+router.post('/:id/updates', requireAuth, async (req, res) => {
+  const { title, body } = req.body;
+  if (!title || !body) {
+    return res.status(400).json({ error: 'title and body are required' });
+  }
+
+  const { rows: campaignRows } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!campaignRows.length) return res.status(404).json({ error: 'Campaign not found' });
+  if (campaignRows[0].creator_id !== req.user.userId) {
+    return res.status(403).json({ error: 'Only campaign creator can post updates' });
+  }
+
+  const { rows } = await db.query(
+    `INSERT INTO campaign_updates (campaign_id, author_id, title, body)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, campaign_id, author_id, title, body, created_at`,
+    [req.params.id, req.user.userId, title.trim(), body.trim()]
+  );
   res.status(201).json(rows[0]);
 });
 

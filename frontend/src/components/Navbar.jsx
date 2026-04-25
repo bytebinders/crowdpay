@@ -18,8 +18,14 @@ export default function Navbar() {
         <div className="nav-links">
           {user ? (
             <>
-              {user.is_admin && <Link to="/admin" style={styles.link}>Admin</Link>}
-              <Link to="/campaigns/new" style={styles.link}>Start Campaign</Link>
+              {(user.role === 'creator' || user.role === 'admin') && (
+                <Link to="/campaigns/new" style={styles.link}>Start Campaign</Link>
+              )}
+              {(user.role === 'creator' || user.role === 'admin') && (
+                <Link to="/dashboard" style={styles.link}>Dashboard</Link>
+              )}
+              <Link to="/my-contributions" style={styles.link}>My Contributions</Link>
+              {user.role === 'admin' && <Link to="/admin" style={styles.link}>Admin</Link>}
               <Link to="/developer" style={styles.link}>Developer</Link>
               <span style={styles.name}>{user.name}</span>
               <button onClick={handleLogout} className="btn-secondary" style={{ padding: '0.4rem 0.9rem' }}>

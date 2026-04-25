@@ -5,6 +5,27 @@ import { useAuth } from '../context/AuthContext';
 import ContributeModal from '../components/ContributeModal';
 import WithdrawalsSection from '../components/WithdrawalsSection';
 
+function escapeHtml(text) {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function markdownToHtml(markdown) {
+  const escaped = escapeHtml(markdown || '');
+  return escaped
+    .replace(/^### (.*)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\n/g, '<br />');
+}
+
 export default function Campaign() {
   const { id } = useParams();
   const location = useLocation();
@@ -15,6 +36,10 @@ export default function Campaign() {
   const [showModal, setShowModal] = useState(false);
   const [contributed, setContributed] = useState(false);
   const [showCreatedBanner, setShowCreatedBanner] = useState(!!location.state?.created);
+  const [updates, setUpdates] = useState([]);
+  const [updateForm, setUpdateForm] = useState({ title: '', body: '' });
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updatesError, setUpdatesError] = useState('');
 
   useEffect(() => {
     setLoadError('');
@@ -23,6 +48,7 @@ export default function Campaign() {
       .then(setCampaign)
       .catch((err) => setLoadError(err.message || 'Could not load campaign.'));
     api.getContributions(id).then(setContributions).catch(() => setContributions([]));
+    api.getCampaignUpdates(id, { limit: 20 }).then(setUpdates).catch(() => setUpdates([]));
   }, [id, contributed]);
 
   useEffect(() => {
@@ -53,6 +79,27 @@ export default function Campaign() {
   }
 
   const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
+  const canPostUpdate = user?.id && campaign.creator_id === user.id;
+
+  async function submitUpdate(e) {
+    e.preventDefault();
+    setUpdatesError('');
+    setUpdateBusy(true);
+    try {
+      await api.postCampaignUpdate(
+        campaign.id,
+        { title: updateForm.title.trim(), body: updateForm.body.trim() },
+        token
+      );
+      setUpdateForm({ title: '', body: '' });
+      const list = await api.getCampaignUpdates(id, { limit: 20 });
+      setUpdates(list);
+    } catch (err) {
+      setUpdatesError(err.message || 'Could not publish update');
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
 
   return (
     <main className="container" style={{ paddingTop: '2.5rem', paddingBottom: '4rem', maxWidth: '760px' }}>
@@ -139,6 +186,51 @@ export default function Campaign() {
             api.getCampaign(id).then(setCampaign).catch(() => {});
           }}
         />
+      )}
+
+      <h2 style={styles.sectionTitle}>Updates ({updates.length})</h2>
+      {canPostUpdate && (
+        <form onSubmit={submitUpdate} className="campaign-card" style={{ marginBottom: '1rem' }}>
+          <strong style={{ marginBottom: '0.5rem', display: 'block' }}>Post update</strong>
+          <input
+            placeholder="Update title"
+            value={updateForm.title}
+            onChange={(e) => setUpdateForm((s) => ({ ...s, title: e.target.value }))}
+            required
+            style={{ marginBottom: '0.5rem' }}
+          />
+          <textarea
+            placeholder="Write markdown update..."
+            value={updateForm.body}
+            onChange={(e) => setUpdateForm((s) => ({ ...s, body: e.target.value }))}
+            rows={4}
+            required
+          />
+          {updatesError && <p className="alert alert--error" style={{ marginTop: '0.5rem' }}>{updatesError}</p>}
+          <button type="submit" className="btn-primary" disabled={updateBusy} style={{ marginTop: '0.5rem' }}>
+            {updateBusy ? 'Posting...' : 'Post update'}
+          </button>
+        </form>
+      )}
+      {updates.length === 0 ? (
+        <p style={{ color: '#999', marginBottom: '1rem' }}>No updates posted yet.</p>
+      ) : (
+        <div style={{ display: 'grid', gap: '0.75rem', marginBottom: '1.25rem' }}>
+          {updates.map((update) => (
+            <article key={update.id} className="campaign-card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <strong>{update.title}</strong>
+                <span style={{ color: '#666', fontSize: '0.85rem' }}>
+                  {update.author_name} • {new Date(update.created_at).toLocaleString()}
+                </span>
+              </div>
+              <div
+                style={{ marginTop: '0.5rem', color: '#333', lineHeight: 1.5 }}
+                dangerouslySetInnerHTML={{ __html: markdownToHtml(update.body) }}
+              />
+            </article>
+          ))}
+        </div>
       )}
 
       <h2 style={styles.sectionTitle}>Contributions ({contributions.length})</h2>

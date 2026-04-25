@@ -49,7 +49,7 @@ router.patch('/campaigns/:id/status', async (req, res) => {
 // GET /users
 router.get('/users', async (req, res) => {
   const { rows } = await db.query(`
-    SELECT u.id, u.name, u.email, u.wallet_public_key, u.is_admin, u.created_at,
+    SELECT u.id, u.name, u.email, u.wallet_public_key, u.role, u.created_at,
            (SELECT COUNT(*) FROM campaigns WHERE creator_id = u.id) as campaign_count,
            (SELECT COUNT(*) FROM contributions WHERE sender_public_key = u.wallet_public_key) as contribution_count
     FROM users u

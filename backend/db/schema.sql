@@ -9,6 +9,8 @@ CREATE TABLE users (
   name                    TEXT NOT NULL,
   wallet_public_key       TEXT UNIQUE NOT NULL,
   wallet_secret_encrypted TEXT NOT NULL,  -- encrypt with KMS in production
+  role                    TEXT NOT NULL DEFAULT 'contributor'
+                          CHECK (role IN ('contributor', 'creator', 'admin')),
   is_admin                BOOLEAN DEFAULT FALSE,
   created_at              TIMESTAMPTZ DEFAULT NOW()
 );
@@ -183,6 +185,17 @@ CREATE TABLE milestones (
 );
 
 CREATE INDEX milestones_campaign_idx ON milestones (campaign_id);
+
+CREATE TABLE campaign_updates (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id     UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  author_id       UUID NOT NULL REFERENCES users(id),
+  title           TEXT NOT NULL,
+  body            TEXT NOT NULL,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX campaign_updates_campaign_idx ON campaign_updates (campaign_id, created_at DESC);
 
 -- Horizon paging cursor per campaign wallet (survives restarts; enables replay + stream resume)
 CREATE TABLE ledger_stream_cursors (

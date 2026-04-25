@@ -41,13 +41,25 @@ async function authenticate(req) {
 }
 
 function requireAdmin(req, res, next) {
-  if (!req.user || !req.user.is_admin) {
+  if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Requires admin role' });
   }
   next();
 }
 
-module.exports = { requireAuth, requireAdmin };
+function requireRole(...roles) {
+  const allowed = new Set(roles);
+  return (req, res, next) => {
+    if (!req.user || !req.user.role) {
+      return res.status(403).json({ error: 'Requires authenticated user role' });
+    }
+    if (!allowed.has(req.user.role)) {
+      return res.status(403).json({ error: 'Insufficient role for this action' });
+    }
+    next();
+  };
+}
+
 /**
  * API keys carry scope arrays. JWT sessions retain full access.
  * @returns {boolean} false if response was sent (403)
@@ -110,4 +122,11 @@ function requireAuth(req, res, next) {
     });
 }
 
-module.exports = { requireAuth, authenticate, assertApiKeyScopes, hashApiKey };
+module.exports = {
+  requireAuth,
+  authenticate,
+  assertApiKeyScopes,
+  hashApiKey,
+  requireAdmin,
+  requireRole,
+};

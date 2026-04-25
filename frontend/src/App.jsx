@@ -8,6 +8,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import AdminDashboard from './pages/AdminDashboard';
 import Developer from './pages/Developer';
+import Dashboard from './pages/Dashboard';
+import MyContributions from './pages/MyContributions';
 import { AuthProvider } from './context/AuthContext';
 
 export default function App() {
@@ -22,6 +24,8 @@ export default function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/admin" element={<AdminDashboard />} />
         <Route path="/developer" element={<Developer />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/my-contributions" element={<MyContributions />} />
       </Routes>
     </AuthProvider>
   );

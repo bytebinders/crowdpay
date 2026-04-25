@@ -65,9 +65,7 @@ router.get('/finalization/:txHash', requireAuth, async (req, res) => {
   const isInitiator = row.initiated_by_user_id === req.user.userId;
   const isCreator = row.creator_id === req.user.userId;
   const isContributor = userPk && row.sender_public_key && row.sender_public_key === userPk;
-  const isPlatform =
-    process.env.PLATFORM_APPROVER_USER_ID &&
-    req.user.userId === process.env.PLATFORM_APPROVER_USER_ID;
+  const isPlatform = req.user.role === 'admin';
 
   if (!isInitiator && !isCreator && !isContributor && !isPlatform) {
     return res.status(403).json({ error: 'Not authorized to view this transaction' });

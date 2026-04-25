@@ -9,6 +9,9 @@ export default function CampaignCard({ campaign }) {
       <div className="campaign-card" style={styles.card}>
         <div style={styles.header}>
           <span style={styles.asset}>{campaign.asset_type}</span>
+          {typeof campaign.updates_count === 'number' && (
+            <span style={styles.updates}>{campaign.updates_count} updates</span>
+          )}
         </div>
         <h3 style={styles.title}>{campaign.title}</h3>
         <p style={styles.desc}>{campaign.description?.slice(0, 100)}{campaign.description?.length > 100 ? '…' : ''}</p>
@@ -29,8 +32,9 @@ export default function CampaignCard({ campaign }) {
 
 const styles = {
   card: { background: '#fff', border: '1px solid #e5e5e5', borderRadius: '10px', padding: '1.25rem', transition: 'box-shadow 0.15s' },
-  header: { marginBottom: '0.6rem' },
+  header: { marginBottom: '0.6rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   asset: { background: '#ede9fe', color: '#7c3aed', fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '99px' },
+  updates: { fontSize: '0.75rem', fontWeight: 700, color: '#0f766e' },
   title: { fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.4rem', color: '#111' },
   desc: { fontSize: '0.875rem', color: '#666', marginBottom: '1rem' },
   bar: { background: '#f0f0f0', borderRadius: '99px', height: '6px', marginBottom: '0.5rem', overflow: 'hidden' },

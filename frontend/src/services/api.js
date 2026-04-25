@@ -47,11 +47,18 @@ async function request(method, path, body, token, options = {}) {
 export const api = {
   register: (body) => request('POST', '/users/register', body),
   login: (body) => request('POST', '/users/login', body),
+  getMyCampaigns: (token) => request('GET', '/users/me/campaigns', null, token),
+  getMyStats: (token) => request('GET', '/users/me/stats', null, token),
+  getMyContributions: (token) => request('GET', '/users/me/contributions', null, token),
 
   getCampaigns: () => request('GET', '/campaigns'),
   getCampaign: (id) => request('GET', `/campaigns/${id}`),
   getCampaignBalance: (id) => request('GET', `/campaigns/${id}/balance`),
   createCampaign: (body, token) => request('POST', '/campaigns', body, token),
+  getCampaignUpdates: (campaignId, options = {}) =>
+    request('GET', `/campaigns/${campaignId}/updates`, null, null, { query: options }),
+  postCampaignUpdate: (campaignId, body, token) =>
+    request('POST', `/campaigns/${campaignId}/updates`, body, token),
 
   getContributions: (campaignId) => request('GET', `/contributions/campaign/${campaignId}`),
   contribute: (body, token) => request('POST', '/contributions', body, token),

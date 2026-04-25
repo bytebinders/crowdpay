@@ -80,11 +80,13 @@ export default function Home() {
         </p>
         {user ? (
           <div className="hero-actions">
-            <Link to="/campaigns/new" style={{ width: '100%' }}>
-              <button type="button" className="btn-primary" style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%' }}>
-                Start a campaign
-              </button>
-            </Link>
+            {(user.role === 'creator' || user.role === 'admin') && (
+              <Link to="/campaigns/new" style={{ width: '100%' }}>
+                <button type="button" className="btn-primary" style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%' }}>
+                  Start a campaign
+                </button>
+              </Link>
+            )}
             <span style={styles.muted}>or browse below and tap a card to contribute.</span>
           </div>
         ) : (
@@ -113,7 +115,7 @@ export default function Home() {
         </p>
       ) : campaigns.length === 0 ? (
         <div className="alert alert--info">
-          {user ? (
+          {user && (user.role === 'creator' || user.role === 'admin') ? (
             <>
               No campaigns yet.{' '}
               <Link to="/campaigns/new" style={{ color: '#1e40af', fontWeight: 700 }}>

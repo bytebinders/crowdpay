@@ -22,7 +22,7 @@ const ASSETS = [
 ];
 
 export default function CreateCampaign() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({
@@ -100,6 +100,14 @@ export default function CreateCampaign() {
     return (
       <main className="container page-narrow" style={{ paddingTop: '3rem' }}>
         <p className="alert alert--info">Redirecting to sign in…</p>
+      </main>
+    );
+  }
+
+  if (user?.role !== 'creator' && user?.role !== 'admin') {
+    return (
+      <main className="container page-narrow" style={{ paddingTop: '3rem' }}>
+        <p className="alert alert--info">Only creator or admin accounts can start campaigns.</p>
       </main>
     );
   }

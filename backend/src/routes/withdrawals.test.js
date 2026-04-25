@@ -4,7 +4,7 @@ const express = require('express');
 const request = require('supertest');
 const proxyquire = require('proxyquire').noCallThru();
 
-function buildApp({ queryImpl, stellarImpl, userId = 'creator-1' }) {
+function buildApp({ queryImpl, stellarImpl, userId = 'creator-1', role = 'creator' }) {
   const stellarStub = {
     buildWithdrawalTransaction: async () => 'xdr-base',
     getAccountMultisigConfig: async () => ({
@@ -29,7 +29,13 @@ function buildApp({ queryImpl, stellarImpl, userId = 'creator-1' }) {
     '../services/stellarService': stellarStub,
     '../middleware/auth': {
       requireAuth: (req, _res, next) => {
-        req.user = { userId };
+        req.user = { userId, role };
+        next();
+      },
+      requireRole: (...roles) => (req, res, next) => {
+        if (!roles.includes(req.user.role)) {
+          return res.status(403).json({ error: 'Insufficient role for this action' });
+        }
         next();
       },
     },
@@ -53,22 +59,16 @@ function campaignRow(overrides = {}) {
   };
 }
 
-test('GET /api/withdrawals/capabilities reflects approver env', async () => {
-  const prev = process.env.PLATFORM_APPROVER_USER_ID;
-  process.env.PLATFORM_APPROVER_USER_ID = 'platform-1';
-  try {
-    const { app, cleanup } = buildApp({
-      queryImpl: async () => ({ rows: [] }),
-      userId: 'platform-1',
-    });
-    const res = await request(app).get('/api/withdrawals/capabilities').set('Authorization', 'Bearer t');
-    cleanup();
-    assert.equal(res.status, 200);
-    assert.equal(res.body.can_approve_platform, true);
-  } finally {
-    if (prev === undefined) delete process.env.PLATFORM_APPROVER_USER_ID;
-    else process.env.PLATFORM_APPROVER_USER_ID = prev;
-  }
+test('GET /api/withdrawals/capabilities reflects admin role', async () => {
+  const { app, cleanup } = buildApp({
+    queryImpl: async () => ({ rows: [] }),
+    userId: 'platform-1',
+    role: 'admin',
+  });
+  const res = await request(app).get('/api/withdrawals/capabilities').set('Authorization', 'Bearer t');
+  cleanup();
+  assert.equal(res.status, 200);
+  assert.equal(res.body.can_approve_platform, true);
 });
 
 test('POST /api/withdrawals/request creates pending request and logs event', async () => {
@@ -113,6 +113,7 @@ test('POST /api/withdrawals/request creates pending request and logs event', asy
 
 test('POST /api/withdrawals/request blocks when campaign not active or funded', async () => {
   const { app, cleanup } = buildApp({
+    role: 'admin',
     queryImpl: async (text) => {
       if (text.includes('FROM campaigns WHERE id')) {
         return { rows: [campaignRow({ status: 'closed' })] };
@@ -183,6 +184,7 @@ test('POST /api/withdrawals/request denies invalid multisig config', async () =>
 
 test('POST /api/withdrawals/:id/approve/platform denies before creator approval', async () => {
   const { app, cleanup } = buildApp({
+    role: 'admin',
     queryImpl: async () => ({
       rows: [{
         id: 'w-1',
@@ -248,6 +250,7 @@ test('POST /api/withdrawals/:id/approve/creator signs withdrawal request', async
 
 test('POST /api/withdrawals/:id/approve/platform denies insufficient signatures', async () => {
   const { app, cleanup } = buildApp({
+    role: 'admin',
     queryImpl: async () => ({
       rows: [{
         id: 'w-1',
@@ -275,6 +278,7 @@ test('POST /api/withdrawals/:id/approve/platform denies insufficient signatures'
 test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', async () => {
   const calls = [];
   const { app, cleanup } = buildApp({
+    role: 'admin',
     queryImpl: async (text) => {
       calls.push(text);
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
@@ -369,6 +373,7 @@ test('POST /api/withdrawals/:id/cancel succeeds before creator signs', async () 
 test('POST /api/withdrawals/:id/reject marks denied after creator signed', async () => {
   const { app, cleanup } = buildApp({
     userId: 'platform-user',
+    role: 'admin',
     queryImpl: async (text) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
       if (text.includes('SELECT * FROM withdrawal_requests WHERE id')) {
@@ -389,18 +394,10 @@ test('POST /api/withdrawals/:id/reject marks denied after creator signed', async
     },
   });
 
-  const prev = process.env.PLATFORM_APPROVER_USER_ID;
-  process.env.PLATFORM_APPROVER_USER_ID = 'platform-user';
-  let response;
-  try {
-    response = await request(app)
-      .post('/api/withdrawals/w-1/reject')
-      .set('Authorization', 'Bearer t')
-      .send({ reason: 'Compliance hold' });
-  } finally {
-    if (prev === undefined) delete process.env.PLATFORM_APPROVER_USER_ID;
-    else process.env.PLATFORM_APPROVER_USER_ID = prev;
-  }
+  const response = await request(app)
+    .post('/api/withdrawals/w-1/reject')
+    .set('Authorization', 'Bearer t')
+    .send({ reason: 'Compliance hold' });
 
   cleanup();
   assert.equal(response.status, 200);
@@ -409,6 +406,7 @@ test('POST /api/withdrawals/:id/reject marks denied after creator signed', async
 
 test('POST /api/withdrawals/:id/approve/platform logs failure when Stellar rejects', async () => {
   const { app, cleanup } = buildApp({
+    role: 'admin',
     queryImpl: async (text) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
       if (text.includes('SELECT wr.*, c.status')) {

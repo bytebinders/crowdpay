@@ -7,7 +7,7 @@ import { markJustRegistered } from '../lib/onboarding';
 export default function Register() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'contributor' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -39,6 +39,10 @@ export default function Register() {
         <input placeholder="Full name" value={form.name} onChange={set('name')} required />
         <input type="email" placeholder="Email" value={form.email} onChange={set('email')} required />
         <input type="password" placeholder="Password" value={form.password} onChange={set('password')} required minLength={8} />
+        <select value={form.role} onChange={set('role')} aria-label="Account role">
+          <option value="contributor">Contributor</option>
+          <option value="creator">Creator</option>
+        </select>
         {error && <p style={{ color: '#dc2626', fontSize: '0.875rem' }}>{error}</p>}
         <button type="submit" className="btn-primary" disabled={loading} style={{ padding: '0.8rem' }}>
           {loading ? 'Creating account…' : 'Sign up'}

@@ -24,7 +24,10 @@ function buildApp({ queryImpl, buildWithdrawalTransactionImpl, insertWithdrawalP
     },
     '../middleware/auth': {
       requireAuth: (req, _res, next) => {
-        req.user = { userId: 'platform-1' };
+        req.user = { userId: 'platform-1', role: 'admin' };
+        next();
+      },
+      requireRole: () => (req, _res, next) => {
         next();
       },
     },

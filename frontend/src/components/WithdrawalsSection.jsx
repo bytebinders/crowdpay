@@ -27,6 +27,7 @@ export default function WithdrawalsSection({ campaign, user, token, onReleased }
   const [openAudit, setOpenAudit] = useState(null);
 
   const isCreator = user?.id && campaign.creator_id === user.id;
+  const isAdmin = user?.role === 'admin';
   const canView = !forbidden && (isCreator || cap.can_approve_platform);
   const hasPending = rows.some((r) => r.status === 'pending');
   const canOpenRequest =
@@ -290,7 +291,7 @@ export default function WithdrawalsSection({ campaign, user, token, onReleased }
                       onClick={() => runAction(row.id, () => api.approveWithdrawalPlatform(row.id, token))}
                       style={{ fontSize: '0.8rem' }}
                     >
-                      Approve & submit
+                      Admin approve & submit
                     </button>
                   </>
                 )}
@@ -300,10 +301,10 @@ export default function WithdrawalsSection({ campaign, user, token, onReleased }
         </ul>
       )}
 
-      {cap.can_approve_platform && (
+      {cap.can_approve_platform && isAdmin && (
         <p style={{ ...styles.hint, marginTop: '1rem' }}>
-          Platform actions use the server key; your account is only checked for authorization. Set{' '}
-          <code>PLATFORM_APPROVER_USER_ID</code> in production to restrict this UI to ops staff.
+          Admin actions sign using the platform server key after creator approval. Every transition is written to audit
+          history.
         </p>
       )}
     </section>
