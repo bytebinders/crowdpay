@@ -182,3 +182,13 @@ CREATE TABLE milestones (
 );
 
 CREATE INDEX milestones_campaign_idx ON milestones (campaign_id);
+
+-- Horizon paging cursor per campaign wallet (survives restarts; enables replay + stream resume)
+CREATE TABLE ledger_stream_cursors (
+  campaign_id         UUID PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE,
+  wallet_public_key   TEXT NOT NULL,
+  last_cursor         TEXT NOT NULL,
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ledger_stream_cursors_wallet_idx ON ledger_stream_cursors (wallet_public_key);

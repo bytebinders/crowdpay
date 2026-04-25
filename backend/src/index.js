@@ -3,10 +3,7 @@ require('./config/env').validateEnv();
 
 const express = require('express');
 const cors = require('cors');
-const logger = require('./config/logger');
-const { requestIdMiddleware } = require('./middleware/requestId');
-const { startLedgerMonitor } = require('./services/ledgerMonitor');
-const { sendAlert } = require('./services/alerting');
+const { startLedgerMonitor, getLedgerStreamHealth } = require('./services/ledgerMonitor');
 
 const app = express();
 
@@ -24,6 +21,15 @@ app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/milestones', require('./routes/milestones'));
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
+
+app.get('/health/ledger', async (_req, res) => {
+  try {
+    const body = await getLedgerStreamHealth();
+    res.json(body);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'ledger health failed' });
+  }
+});
 
 const { startWebhookRetryPoller } = require('./services/webhookDispatcher');
 
