@@ -78,4 +78,13 @@ export const api = {
   getAdminCampaigns: (token) => request('GET', '/admin/campaigns', null, token),
   getAdminUsers: (token) => request('GET', '/admin/users', null, token),
   updateCampaignStatus: (id, status, token) => request('PATCH', `/admin/campaigns/${id}/status`, { status }, token),
+  listApiKeys: (token) => request('GET', '/api-keys', null, token),
+  createApiKey: (body, token) => request('POST', '/api-keys', body, token),
+  deleteApiKey: (id, token) => request('DELETE', `/api-keys/${id}`, null, token),
+
+  listWebhooks: (token) => request('GET', '/webhooks', null, token),
+  createWebhook: (body, token) => request('POST', '/webhooks', body, token),
+  deleteWebhook: (id, token) => request('DELETE', `/webhooks/${id}`, null, token),
+  listWebhookDeliveries: (token, options = {}) =>
+    request('GET', '/webhooks/deliveries', null, token, { query: options }),
 };

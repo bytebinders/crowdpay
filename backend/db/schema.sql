@@ -122,3 +122,64 @@ CREATE INDEX stellar_transactions_campaign_created_idx
 CREATE INDEX stellar_transactions_status_idx ON stellar_transactions (status);
 CREATE INDEX stellar_transactions_tx_hash_idx ON stellar_transactions (tx_hash);
 CREATE INDEX stellar_transactions_withdrawal_idx ON stellar_transactions (withdrawal_request_id);
+
+-- Integrations: API keys (server-to-server) and outbound webhooks
+CREATE TABLE api_keys (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key_prefix      TEXT NOT NULL,
+  key_hash        TEXT NOT NULL UNIQUE,
+  label           TEXT NOT NULL DEFAULT '',
+  scopes          TEXT[] NOT NULL DEFAULT ARRAY['read', 'write', 'withdrawals'],
+  last_used_at    TIMESTAMPTZ,
+  revoked_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX api_keys_user_active_idx ON api_keys (user_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE webhooks (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  url             TEXT NOT NULL,
+  events          TEXT[] NOT NULL,
+  secret          TEXT NOT NULL,
+  revoked_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX webhooks_user_active_idx ON webhooks (user_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE webhook_deliveries (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  webhook_id            UUID NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event_type            TEXT NOT NULL,
+  payload               JSONB NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'delivering', 'delivered', 'failed', 'retrying')),
+  response_status       INT,
+  response_body_snippet TEXT,
+  attempt_count         INT NOT NULL DEFAULT 0,
+  last_error            TEXT,
+  next_retry_at         TIMESTAMPTZ,
+  delivered_at          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX webhook_deliveries_webhook_idx ON webhook_deliveries (webhook_id);
+CREATE INDEX webhook_deliveries_retry_idx
+  ON webhook_deliveries (status, next_retry_at)
+  WHERE status IN ('pending', 'retrying');
+
+CREATE TABLE milestones (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id     UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  title           TEXT NOT NULL,
+  sort_order      INT NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved')),
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX milestones_campaign_idx ON milestones (campaign_id);

@@ -9,8 +9,7 @@
 const { server } = require('../config/stellar');
 const db = require('../config/database');
 const { markContributionIndexed } = require('./stellarTransactionService');
-const logger = require('../config/logger');
-const { sendAlert } = require('./alerting');
+const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('./webhookDispatcher');
 
 // Map of publicKey -> EventSource (so we can close them if needed)
 const activeStreams = new Map();
@@ -69,6 +68,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
   const txHash = payment.transaction_hash;
 
   const client = await db.connect();
+  let postCommitHooks = null;
   try {
     const existing = await client.query(
       'SELECT id FROM contributions WHERE tx_hash = $1',
@@ -77,6 +77,12 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     if (existing.rows.length > 0) return;
 
     await client.query('BEGIN');
+
+    const { rows: creatorRows } = await client.query(
+      'SELECT creator_id FROM campaigns WHERE id = $1',
+      [campaignId]
+    );
+    const creatorId = creatorRows[0].creator_id;
 
     const { rows: inserted } = await client.query(
       `INSERT INTO contributions
@@ -103,15 +109,34 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
       [destinationAmount, campaignId]
     );
 
+    const { rows: fundedRows } = await client.query(
+      `UPDATE campaigns SET status = 'funded'
+       WHERE id = $1 AND status = 'active' AND raised_amount >= target_amount
+       RETURNING id, creator_id, title, raised_amount, target_amount, asset_type`,
+      [campaignId]
+    );
+
     await markContributionIndexed(client, txHash, inserted[0].id);
 
     await client.query('COMMIT');
-    logger.info('Contribution indexed', {
-      campaign_id: campaignId,
-      amount: destinationAmount,
-      asset: destinationAsset,
-      tx_hash: txHash,
-    });
+    postCommitHooks = {
+      creatorId,
+      contributionId: inserted[0].id,
+      campaignId,
+      fundedCampaign: fundedRows[0] || null,
+      contributionPayload: {
+        id: inserted[0].id,
+        campaign_id: campaignId,
+        tx_hash: txHash,
+        sender_public_key: payment.from,
+        amount: String(destinationAmount),
+        asset: destinationAsset,
+        payment_type: paymentType,
+      },
+    };
+    console.log(
+      `[monitor] Contribution indexed: ${destinationAmount} ${destinationAsset} -> campaign ${campaignId}`
+    );
   } catch (err) {
     try {
       await client.query('ROLLBACK');
@@ -125,6 +150,23 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     });
   } finally {
     client.release();
+  }
+
+  if (postCommitHooks) {
+    setImmediate(() => {
+      emitWebhookEventForUser(
+        postCommitHooks.creatorId,
+        WEBHOOK_EVENTS.CONTRIBUTION_RECEIVED,
+        postCommitHooks.contributionPayload
+      ).catch((e) => console.error('[monitor] contribution webhook:', e.message));
+      if (postCommitHooks.fundedCampaign) {
+        emitWebhookEventForUser(
+          postCommitHooks.fundedCampaign.creator_id,
+          WEBHOOK_EVENTS.CAMPAIGN_FUNDED,
+          { campaign: postCommitHooks.fundedCampaign }
+        ).catch((e) => console.error('[monitor] funded webhook:', e.message));
+      }
+    });
   }
 }
 
